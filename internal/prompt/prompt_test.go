@@ -2,11 +2,35 @@ package prompt
 
 import (
 	"bytes"
+	"io"
+	"regexp"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
+
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func plain(s string) string { return ansiRe.ReplaceAllString(s, "") }
+
+// plainStyles returns styles with colour forced off, so View assertions can be
+// written against the bare text layout.
+func plainStyles() styles {
+	r := lipgloss.NewRenderer(io.Discard)
+	r.SetColorProfile(termenv.Ascii)
+	return newStylesFrom(r)
+}
+
+// colorStyles returns styles with a real colour profile, to prove the prompt
+// views actually emit styling rather than just looking styled.
+func colorStyles() styles {
+	r := lipgloss.NewRenderer(io.Discard)
+	r.SetColorProfile(termenv.ANSI256)
+	return newStylesFrom(r)
+}
 
 // newTest returns a Prompter reading from input. A strings.Reader is not a
 // terminal, so these exercise the non-interactive fallback path.
@@ -103,7 +127,7 @@ func TestSelectEnterTakesTheDefault(t *testing.T) {
 	m := newSelectModel("Remote URL", []Option{
 		{Label: "ssh", Value: "ssh"},
 		{Label: "https", Value: "https"},
-	}, "ssh")
+	}, "ssh", plainStyles())
 	final := press(t, m, enter())
 	if final.result != "ssh" {
 		t.Errorf("result = %q, want ssh", final.result)
@@ -115,7 +139,7 @@ func TestSelectArrowsMoveAndWrap(t *testing.T) {
 		{Label: "ssh", Value: "ssh"},
 		{Label: "https", Value: "https"},
 	}
-	m := newSelectModel("Remote URL", opts, "ssh")
+	m := newSelectModel("Remote URL", opts, "ssh", plainStyles())
 
 	final := press(t, m, down())
 	if final.cursor != 1 {
@@ -137,7 +161,7 @@ func TestSelectLetterJumpsToOption(t *testing.T) {
 	m := newSelectModel("Remote URL", []Option{
 		{Label: "ssh", Value: "ssh"},
 		{Label: "https", Value: "https"},
-	}, "ssh")
+	}, "ssh", plainStyles())
 	final := press(t, m, keyRune('h'))
 	if final.result != "https" {
 		t.Errorf("pressing h should choose https, got %q", final.result)
@@ -148,7 +172,7 @@ func TestSelectEscKeepsTheDefault(t *testing.T) {
 	m := newSelectModel("Remote URL", []Option{
 		{Label: "ssh", Value: "ssh"},
 		{Label: "https", Value: "https"},
-	}, "ssh")
+	}, "ssh", plainStyles())
 	final := press(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if final.result != "ssh" {
 		t.Errorf("Esc should keep the highlighted option, got %q", final.result)
@@ -159,7 +183,7 @@ func TestSelectViewShowsDetailAndErasesWhenDone(t *testing.T) {
 	m := newSelectModel("Remote URL", []Option{
 		{Label: "ssh", Value: "ssh", Detail: "git@codeberg.org:you/repo.git"},
 		{Label: "https", Value: "https", Detail: "https://codeberg.org/you/repo.git"},
-	}, "ssh")
+	}, "ssh", plainStyles())
 
 	view := m.View()
 	for _, want := range []string{"ssh", "https", "git@codeberg.org:you/repo.git"} {
@@ -181,7 +205,7 @@ func TestSelectResultLabelReadsBackTheOption(t *testing.T) {
 	m := newSelectModel("Remote URL", []Option{
 		{Label: "ssh", Value: "ssh"},
 		{Label: "https", Value: "https"},
-	}, "ssh")
+	}, "ssh", plainStyles())
 	final := press(t, m, down(), enter())
 	if got := final.resultLabel(); got != "https" {
 		t.Errorf("resultLabel = %q, want https", got)
@@ -196,7 +220,7 @@ func TestSelectWithNoOptionsReturnsDefault(t *testing.T) {
 }
 
 func TestLineModelAcceptsDefaultOnEnter(t *testing.T) {
-	m := newLineModel("Remote name", "codeberg")
+	m := newLineModel("Remote name", "codeberg", plainStyles())
 	final := press(t, m, enter())
 	if final.result != "codeberg" {
 		t.Errorf("result = %q, want codeberg", final.result)
@@ -213,7 +237,7 @@ func backspaces(n int) []tea.KeyMsg {
 }
 
 func TestLineModelKeepsDefaultWhenCleared(t *testing.T) {
-	m := newLineModel("Remote name", "codeberg")
+	m := newLineModel("Remote name", "codeberg", plainStyles())
 	keys := append(backspaces(len("codeberg")), enter())
 	final := press(t, m, keys...)
 	if final.result != "codeberg" {
@@ -222,7 +246,7 @@ func TestLineModelKeepsDefaultWhenCleared(t *testing.T) {
 }
 
 func TestLineModelKeepsTypedValue(t *testing.T) {
-	m := newLineModel("Remote name", "codeberg")
+	m := newLineModel("Remote name", "codeberg", plainStyles())
 	keys := backspaces(len("codeberg"))
 	for _, r := range "myforge" {
 		keys = append(keys, keyRune(r))
@@ -236,7 +260,7 @@ func TestLineModelKeepsTypedValue(t *testing.T) {
 func TestLineModelTypingReplacesTheDefault(t *testing.T) {
 	// Without this, typing after the seeded suggestion would append to it and
 	// produce "codebergmyforge".
-	m := newLineModel("Remote name", "codeberg")
+	m := newLineModel("Remote name", "codeberg", plainStyles())
 	keys := make([]tea.KeyMsg, 0, len("myforge"))
 	for _, r := range "myforge" {
 		keys = append(keys, keyRune(r))
@@ -248,12 +272,63 @@ func TestLineModelTypingReplacesTheDefault(t *testing.T) {
 }
 
 func TestLineViewSeedsTheDefault(t *testing.T) {
-	m := newLineModel("Remote name", "codeberg")
+	m := newLineModel("Remote name", "codeberg", plainStyles())
 	view := m.View()
 	if !strings.Contains(view, "codeberg") {
 		t.Errorf("view should prefill the default, got:\n%s", view)
 	}
 	if !strings.Contains(view, "Remote name") {
 		t.Errorf("view should show the label, got:\n%s", view)
+	}
+}
+
+// --- colour ---------------------------------------------------------------
+
+// Colour must not reach a terminal that cannot show it, so that a piped run
+// leaves no escape sequences behind in the prompt area.
+func TestPromptViewsHaveNoEscapesWithoutColor(t *testing.T) {
+	sel := newSelectModel("Remote URL", []Option{
+		{Label: "ssh", Value: "ssh", Detail: "git@host:o/n.git"},
+		{Label: "https", Value: "https", Detail: "https://host/o/n.git"},
+	}, "ssh", plainStyles())
+	if s := sel.View(); strings.ContainsRune(s, 0x1b) {
+		t.Errorf("select view still contains escapes without colour:\n%q", s)
+	}
+	line := newLineModel("Remote name", "codeberg", plainStyles())
+	if s := line.View(); strings.ContainsRune(s, 0x1b) {
+		t.Errorf("line view still contains escapes without colour:\n%q", s)
+	}
+}
+
+// With a colour profile every part of the prompt should be styled, otherwise
+// the styles are dead weight.
+func TestPromptViewsEmitStyleWithColor(t *testing.T) {
+	sel := newSelectModel("Remote URL", []Option{
+		{Label: "ssh", Value: "ssh", Detail: "git@host:o/n.git"},
+		{Label: "https", Value: "https", Detail: "https://host/o/n.git"},
+	}, "ssh", colorStyles())
+	if s := sel.View(); !strings.ContainsRune(s, 0x1b) {
+		t.Errorf("select view produced no styling with colour enabled:\n%q", s)
+	}
+	line := newLineModel("Remote name", "codeberg", colorStyles())
+	if s := line.View(); !strings.ContainsRune(s, 0x1b) {
+		t.Errorf("line view produced no styling with colour enabled:\n%q", s)
+	}
+}
+
+// Colour must not disturb the layout: stripping the escapes has to leave the
+// same text, with the options still padded into one column.
+func TestColorDoesNotBreakSelectAlignment(t *testing.T) {
+	opts := []Option{
+		{Label: "ssh", Value: "ssh", Detail: "git@host:o/n.git"},
+		{Label: "https", Value: "https", Detail: "https://host/o/n.git"},
+	}
+	colored := newSelectModel("Remote URL", opts, "ssh", colorStyles()).View()
+	bare := newSelectModel("Remote URL", opts, "ssh", plainStyles()).View()
+	if plain(colored) != bare {
+		t.Errorf("colour changed the layout:\n got %q\nwant %q", plain(colored), bare)
+	}
+	if strings.Count(bare, "\n") != 3 {
+		t.Errorf("expected label + 2 options + hint, got:\n%s", bare)
 	}
 }

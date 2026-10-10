@@ -40,17 +40,21 @@ type styles struct {
 }
 
 func newStyles(w io.Writer) styles {
-	r := lipgloss.NewRenderer(w)
+	return newStylesFrom(lipgloss.NewRenderer(w))
+}
+
+// newStylesFrom is the injection point the tests use to pin a colour profile.
+func newStylesFrom(r *lipgloss.Renderer) styles {
 	return styles{
 		label:   r.NewStyle().Bold(true),
-		answer:  r.NewStyle().Foreground(r.Color("2")),
+		answer:  r.NewStyle().Foreground(lipgloss.Color("2")),
 		hint:    r.NewStyle().Faint(true),
 		detail:  r.NewStyle().Faint(true),
-		marker:  r.NewStyle().Foreground(r.Color("6")),
-		picked:  r.NewStyle().Foreground(r.Color("6")).Bold(true),
+		marker:  r.NewStyle().Foreground(lipgloss.Color("6")),
+		picked:  r.NewStyle().Foreground(lipgloss.Color("6")).Bold(true),
 		option:  r.NewStyle(),
 		input:   r.NewStyle(),
-		success: r.NewStyle().Foreground(r.Color("2")),
+		success: r.NewStyle().Foreground(lipgloss.Color("2")),
 	}
 }
 
@@ -86,7 +90,7 @@ func New(in io.Reader, out io.Writer) *Prompter {
 // NonInteractive returns a Prompter that never asks anything and always returns
 // the default. This is what -yes selects.
 func NonInteractive(out io.Writer) *Prompter {
-	return &Prompter{in: strings.NewReader(""), out: out, interactive: false}
+	return &Prompter{in: strings.NewReader(""), out: out, interactive: false, s: newStyles(out)}
 }
 
 func isTerminal(v any) bool {
@@ -137,12 +141,12 @@ func (p *Prompter) Line(label, def string) string {
 		p.note(label, def)
 		return def
 	}
-	m, ok := runPrompt(p, newLineModel(label, def))
+	m, ok := runPrompt(p, newLineModel(label, def, p.s))
 	if !ok {
 		p.note(label, def)
 		return def
 	}
-	p.writef("%s: %s\n", label, m.result)
+	p.writef("%s %s\n", p.s.hint.Render(label+":"), p.s.answer.Render(m.result))
 	return m.result
 }
 
@@ -169,19 +173,22 @@ func (p *Prompter) Select(label string, options []Option, def string) string {
 		p.note(label, def)
 		return def
 	}
-	m, ok := runPrompt(p, newSelectModel(label, options, def))
+	m, ok := runPrompt(p, newSelectModel(label, options, def, p.s))
 	if !ok {
 		p.note(label, def)
 		return def
 	}
-	p.writef("%s: %s\n", label, m.resultLabel())
+	p.writef("%s %s\n", p.s.hint.Render(label+":"), p.s.answer.Render(m.resultLabel()))
 	return m.result
 }
 
 // note explains a default that was applied without asking, so a script or CI
 // log never leaves it looking like fth silently guessed.
 func (p *Prompter) note(label, value string) {
-	p.writef("fth: no terminal, using default for %q: %s\n", label, value)
+	p.writef("%s %s %s\n",
+		p.s.hint.Render("fth:"),
+		p.s.hint.Render(fmt.Sprintf("no terminal, using default for %q:", label)),
+		p.s.answer.Render(value))
 }
 
 // lineModel is the Bubble Tea model behind Line: a single text input seeded
@@ -192,19 +199,22 @@ type lineModel struct {
 	input  textinput.Model
 	done   bool
 	result string
+	s      styles
 	// typed records whether the user has entered anything yet, so the first
 	// keystroke can replace the seeded default instead of appending to it.
 	typed bool
 }
 
-func newLineModel(label, def string) lineModel {
+func newLineModel(label, def string, s styles) lineModel {
 	ti := textinput.New()
 	ti.Placeholder = def
 	ti.SetValue(def)
 	ti.CharLimit = 128
 	ti.Width = 40
+	ti.Prompt = ""
+	ti.PromptStyle = s.input
 	ti.Focus()
-	return lineModel{label: label, def: def, input: ti}
+	return lineModel{label: label, def: def, input: ti, s: s}
 }
 
 func (m lineModel) Init() tea.Cmd { return textinput.Blink }
@@ -248,7 +258,10 @@ func (m lineModel) View() string {
 	if m.done {
 		return ""
 	}
-	return fmt.Sprintf("%s [%s]: %s\n", m.label, m.def, m.input.View())
+	return fmt.Sprintf("%s %s %s\n",
+		m.s.label.Render(m.label),
+		m.s.hint.Render("["+m.def+"]:"),
+		m.input.View())
 }
 
 // selectModel is the Bubble Tea model behind Select and YesNo.
@@ -258,10 +271,11 @@ type selectModel struct {
 	cursor  int
 	done    bool
 	result  string
+	s       styles
 }
 
-func newSelectModel(label string, options []Option, def string) selectModel {
-	m := selectModel{label: label, options: options}
+func newSelectModel(label string, options []Option, def string, s styles) selectModel {
+	m := selectModel{label: label, options: options, s: s}
 	for i, o := range options {
 		if o.Value == def {
 			m.cursor = i
@@ -314,7 +328,7 @@ func (m selectModel) View() string {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n", m.label)
+	b.WriteString(m.s.label.Render(m.label) + "\n")
 	width := 0
 	for _, o := range m.options {
 		if n := len(o.Label); n > width {
@@ -322,17 +336,24 @@ func (m selectModel) View() string {
 		}
 	}
 	for i, o := range m.options {
+		picked := i == m.cursor
 		marker := "  "
-		if i == m.cursor {
-			marker = "> "
+		label := m.s.option
+		detail := m.s.detail
+		if picked {
+			// Highlight the whole chosen row, not just the cursor glyph, so it
+			// is obvious at a glance which answer Enter will accept.
+			marker = m.s.marker.Render("> ")
+			label = m.s.picked
+			detail = m.s.option
 		}
-		fmt.Fprintf(&b, "  %s%-*s", marker, width, o.Label)
+		fmt.Fprintf(&b, "  %s%s", marker, label.Render(fmt.Sprintf("%-*s", width, o.Label)))
 		if o.Detail != "" {
-			fmt.Fprintf(&b, "  %s", o.Detail)
+			fmt.Fprintf(&b, "  %s", detail.Render(o.Detail))
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("  (up/down to move, enter to choose)")
+	b.WriteString(m.s.hint.Render("  (up/down to move, enter to choose)"))
 	return b.String()
 }
 

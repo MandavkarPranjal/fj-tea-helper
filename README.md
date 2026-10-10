@@ -186,6 +186,10 @@ restored cleanly even if the question is cancelled.
 - `Esc` or `Ctrl-C` at a prompt keeps the default rather than aborting, so a
   stray keystroke can't leave a half-created repository behind.
 
+Questions are styled too: the question is bold, the highlighted answer is
+accent-coloured along with its cursor, option details are faint, and the
+confirmed answer is echoed in green once you pick it.
+
 ## Colour
 
 Output is styled with [lipgloss](https://github.com/charmbracelet/lipgloss),
@@ -199,6 +203,10 @@ which detects the terminal once at start-up:
 
 The styling is emitted only when the output is a capable terminal. Piping `fth`
 into a file or a pager produces plain text, as does `NO_COLOR=1 fth …`.
+
+Prompts detect the profile against the stream they are actually written to
+(stderr), not stdout, so questions stay coloured even when fth's progress output
+is being piped somewhere else.
 
 Field labels are padded to a common width so values line up in a column
 regardless of how long the label is:
