@@ -48,7 +48,7 @@ func run(ctx context.Context, env []string, name string, args ...string) (string
 // every backend invocation.
 func neutralDir() (string, error) {
 	once.Do(func() {
-		dir, err := os.MkdirTemp("", "fj-tea-helper-")
+		dir, err := os.MkdirTemp("", "fth-")
 		if err == nil {
 			neutral = dir
 		}

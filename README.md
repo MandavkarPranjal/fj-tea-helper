@@ -1,14 +1,14 @@
-# fj-tea-helper
+# fth
 
-Create a new repository on Forgejo or Gitea in one command, using the `fj`
-(Forgejo) or `tea` (Gitea) CLI as the engine.
+**fth** (*fj-tea-helper*) creates a new repository on Forgejo or Gitea in one
+command, using the `fj` (Forgejo) or `tea` (Gitea) CLI as the engine.
 
 It detects which CLI you're authenticated against, creates the remote
 repository, scaffolds a local git repository with `README.md`, `.gitignore` and
 `LICENSE`, wires up the remote and pushes the initial commit.
 
 ```console
-$ fj-tea-helper myproject -lang go -license MIT
+$ fth myproject -lang go -license MIT
 Plan
   backend   fj
   instance  codeberg.org
@@ -31,7 +31,7 @@ Plan
 This project uses [mise](https://mise.jdx.dev) for the toolchain and tasks:
 
 ```sh
-mise run build          # produces ./fj-tea-helper
+mise run build          # produces ./fth
 mise run install        # installs into ~/.local/bin
 mise run check          # fmtcheck + lint + vet + tests
 mise run run -- -list   # build, then run the CLI
@@ -45,13 +45,13 @@ have authenticated. `git` must be on `PATH`.
 ## Usage
 
 ```
-fj-tea-helper [flags] <name>
-fj-tea-helper [flags] <owner>/<name>
-fj-tea-helper -list
+fth [flags] <name>
+fth [flags] <owner>/<name>
+fth -list
 ```
 
-Flags may appear before or after the name, so `mkrepo myproject -private` and
-`mkrepo -private myproject` are equivalent.
+Flags may appear before or after the name, so `fth myproject -private` and
+`fth -private myproject` are equivalent.
 
 ### Flags
 
@@ -86,19 +86,19 @@ Flags may appear before or after the name, so `mkrepo myproject -private` and
 
 ```sh
 # Public Go project on whatever you're logged into
-fj-tea-helper myservice -lang go -license MIT
+fth myservice -lang go -license MIT
 
 # Private repo on a specific Forgejo instance
-fj-tea-helper -tool fj -host codeberg.org -visibility private myservice
+fth -tool fj -host codeberg.org -visibility private myservice
 
 # Force Gitea, an org-owned repo, Apache-2.0, no local scaffold
-fj-tea-helper -tool tea -owner myorg -license Apache-2.0 -no-scaffold myservice
+fth -tool tea -owner myorg -license Apache-2.0 -no-scaffold myservice
 
 # Create the repo and local dir, but decide about pushing later
-fj-tea-helper -no-push myservice
+fth -no-push myservice
 
 # See what would happen
-fj-tea-helper myservice -dry-run
+fth myservice -dry-run
 ```
 
 ## Backend detection
@@ -114,7 +114,7 @@ fj-tea-helper myservice -dry-run
 Use `-list` to see exactly what was detected:
 
 ```console
-$ fj-tea-helper -list
+$ fth -list
 Backends
   fj   installed, no working login
        ! codeberg.org             user=?

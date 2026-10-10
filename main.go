@@ -1,4 +1,4 @@
-// Command fj-tea-helper creates a new repository on a Forgejo or Gitea
+// Command fth (fj-tea-helper) creates a new repository on a Forgejo or Gitea
 // instance using the `fj` or `tea` command line tools, then scaffolds a local
 // clone with a README, .gitignore and LICENSE, wires the remote and pushes.
 package main
@@ -107,7 +107,7 @@ func reorderArgs(fs *flag.FlagSet, argv []string) []string {
 
 func run(argv []string) error {
 	var o options
-	fs := flag.NewFlagSet("fj-tea-helper", flag.ContinueOnError)
+	fs := flag.NewFlagSet("fth", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
 	fs.StringVar(&o.tool, "tool", "auto", "backend CLI to use: auto, tea, or fj")
@@ -146,7 +146,7 @@ func run(argv []string) error {
 	}
 
 	if o.showVersion {
-		fmt.Printf("fj-tea-helper %s\n", version)
+		fmt.Printf("fth %s\n", version)
 		return nil
 	}
 
@@ -159,7 +159,7 @@ func run(argv []string) error {
 			fs.Usage()
 			return errors.New("a repository name is required")
 		case 1:
-			// Allow `mkrepo owner/name` as a shorthand.
+			// Allow `fth owner/name` as a shorthand.
 			if owner, name, ok := strings.Cut(rest[0], "/"); ok && owner != "" && name != "" {
 				if o.owner != "" && o.owner != owner {
 					return fmt.Errorf("conflicting owners: -owner %q and positional %q", o.owner, owner)
@@ -453,12 +453,12 @@ func logf(verbose bool, format string, args ...any) {
 }
 
 func usage(fs *flag.FlagSet) {
-	fmt.Fprintf(os.Stderr, `fj-tea-helper %s — create a Forgejo/Gitea repo via fj or tea
+	fmt.Fprintf(os.Stderr, `fth %s — create a Forgejo/Gitea repo via fj or tea
 
 Usage:
-  fj-tea-helper [flags] <name>
-  fj-tea-helper [flags] <owner>/<name>
-  fj-tea-helper -list
+  fth [flags] <name>
+  fth [flags] <owner>/<name>
+  fth -list
 
 It detects whether 'fj' (Forgejo) or 'tea' (Gitea) is authenticated, creates
 the remote repository, scaffolds a local git repo with README/.gitignore/
@@ -469,10 +469,10 @@ Flags:
 	fs.PrintDefaults()
 	fmt.Fprintf(os.Stderr, `
 Examples:
-  fj-tea-helper myproject
-  fj-tea-helper -tool fj -host codeberg.org -private -lang go myproject
-  fj-tea-helper -tool tea -license MIT -lang node myproject
-  fj-tea-helper -no-push -no-scaffold myproject
+  fth myproject
+  fth -tool fj -host codeberg.org -private -lang go myproject
+  fth -tool tea -license MIT -lang node myproject
+  fth -no-push -no-scaffold myproject
 `)
 	_ = time.Now
 }
