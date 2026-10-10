@@ -180,6 +180,15 @@ func parseTeaRepo(out string, req CreateRequest) (*Repo, error) {
 	return r, nil
 }
 
+// PreviewURLs derives the SSH and HTTPS clone URLs for a repository that does
+// not exist yet, so fth can show the user exactly what each option would add as
+// a remote before it creates anything. It is only ever used to fill gaps left
+// by the backend's own output, so it is never treated as authoritative.
+func PreviewURLs(login, owner, name string) (sshURL, httpsURL string) {
+	r := repoFromParts(CreateRequest{Login: login, Owner: owner, Name: name})
+	return r.SSHURL, r.CloneURL
+}
+
 // repoFromParts derives repository URLs from the login host and owner/name.
 // It is only ever used to fill gaps left by the backend's own output.
 func repoFromParts(req CreateRequest) *Repo {

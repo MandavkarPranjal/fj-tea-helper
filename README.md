@@ -69,7 +69,7 @@ Flags may appear before or after the name, so `fth myproject -private` and
 | `-remote` | `origin` | Git remote name |
 | `-dir` | `./<name>` | Local directory to scaffold |
 | `-readme` | `true` | Write a `README.md` |
-| `-ssh` | `false` | Use the SSH clone URL for the remote |
+| `-url` | `ssh` | Clone URL to wire up: `ssh` or `https` |
 | `-trust-model` | – | Gitea trust model (`tea` only) |
 | `-template` | `false` | Mark as a template repository (`tea` only) |
 | `-no-push` | `false` | Create the remote but don't push |
@@ -153,6 +153,39 @@ Prompts go to stderr and read defaults from stdin, so `fth` still works in
 scripts — it just uses the defaults when there's no terminal. Pass `-yes` to
 skip the non-terminal notice entirely.
 
+## Choosing the remote URL
+
+**SSH is the default**, because it needs no credential-helper entry and does
+not care about token expiry. You're still asked, and shown the concrete URL
+each choice would produce:
+
+```console
+$ fth myservice
+Remote URL
+  > ssh    git@codeberg.org:you/myservice.git
+    https  https://codeberg.org/you/myservice.git
+  (up/down to move, enter to choose)
+Remote URL: ssh
+```
+
+Use `↑`/`↓` to move, or press the first letter of a choice (`s` for ssh, `h`
+for https). Pass `-url ssh` or `-url https` to skip the question entirely.
+
+## Prompts
+
+Every question is a small [Bubble Tea](https://github.com/charmbracelet/bubbletea)
+program: an Elm-architecture loop that takes the terminal only while the question
+is on screen, then hands it straight back. That means progress output scrolls
+normally instead of being wiped by a full-screen TUI, and the terminal is
+restored cleanly even if the question is cancelled.
+
+- **Text questions** show a suggested value in brackets. Press `Enter` to accept
+  it; start typing to replace it entirely.
+- **Choice questions** highlight the current answer with `>`, accept the first
+  letter of any choice as a shortcut, and default to the highlighted one.
+- `Esc` or `Ctrl-C` at a prompt keeps the default rather than aborting, so a
+  stray keystroke can't leave a half-created repository behind.
+
 ## Backend detection
 
 `-tool auto` probes both CLIs and prefers `fj`, falling back to `tea`:
@@ -217,5 +250,5 @@ Layout:
   (`forge.go`, `tea.go`, `fj.go`, `detect.go`, `exec.go`)
 - `internal/scaffold` — local git repository creation and remote attach
   (`scaffold.go`, `repo.go`)
-- `internal/prompt` — interactive prompts with TTY detection and defaults
+- `internal/prompt` — Bubble Tea prompts: text input and arrow-key selection
 - `internal/templates` — embedded SPDX licenses and `.gitignore` templates

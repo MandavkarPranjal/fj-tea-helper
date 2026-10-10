@@ -36,7 +36,9 @@ type options struct {
 	trustModel  string
 	template    bool
 	readme      bool
-	ssh         bool
+	// url selects which clone URL the remote is wired to: "ssh" or "https".
+	// SSH is the default; fth asks before using it.
+	url         string
 	noPush      bool
 	noScaffold  bool
 	force       bool
@@ -126,7 +128,7 @@ func run(argv []string) error {
 	fs.StringVar(&o.trustModel, "trust-model", "", "Gitea trust model (tea only)")
 	fs.BoolVar(&o.template, "template", false, "mark the repository as a template (tea only)")
 	fs.BoolVar(&o.readme, "readme", true, "write a README.md")
-	fs.BoolVar(&o.ssh, "ssh", false, "use the SSH clone URL for the remote")
+	fs.StringVar(&o.url, "url", "ssh", "remote URL to use: ssh or https")
 	fs.BoolVar(&o.noPush, "no-push", false, "create the remote but do not push")
 	fs.BoolVar(&o.noScaffold, "no-scaffold", false, "only create the remote; no local directory")
 	fs.BoolVar(&o.force, "force", false, "scaffold even if the local directory is not empty")
@@ -152,10 +154,13 @@ func run(argv []string) error {
 	// tell an explicit -remote from its default. That distinction decides
 	// whether a taken remote name is a conflict or merely something to ask
 	// about.
-	explicitRemote := false
+	explicitRemote, explicitURL := false, false
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "remote" {
+		switch f.Name {
+		case "remote":
 			explicitRemote = true
+		case "url":
+			explicitURL = true
 		}
 	})
 
@@ -267,6 +272,14 @@ func run(argv []string) error {
 		ask = prompt.NonInteractive(os.Stderr)
 	}
 
+	// SSH is the preferred remote, but the user gets to choose, so ask before
+	// anything is created. -url skips the question entirely. With -no-scaffold
+	// there is no local remote to wire up, so there is nothing to ask about.
+	scheme, previewURL, err := chooseScheme(ask, o.url, explicitURL, login.Name, owner, name, !o.noScaffold)
+	if err != nil {
+		return err
+	}
+
 	var local *scaffold.LocalState
 	if !o.noScaffold {
 		state, err := scaffold.Inspect(dir)
@@ -318,7 +331,8 @@ func run(argv []string) error {
 		Remote:      remoteName,
 		Push:        !o.noPush,
 		Scaffold:    !o.noScaffold,
-		SSH:         o.ssh,
+		SSH:         scheme == "ssh",
+		RemoteURL:   previewURL,
 		Attach:      attach,
 		Upstream:    setUpstream,
 	}
@@ -387,7 +401,7 @@ func run(argv []string) error {
 		Language:      o.lang,
 		DefaultBranch: localBranch,
 		RemoteName:    remoteName,
-		RemoteURL:     pickRemoteURL(repo, o.ssh),
+		RemoteURL:     pickRemoteURL(repo, scheme),
 		Force:         o.force,
 	}
 
@@ -470,12 +484,69 @@ func askForRemoteName(ask *prompt.Prompter, local *scaffold.LocalState, host, ta
 	}
 }
 
-func pickRemoteURL(repo *forge.Repo, ssh bool) string {
-	if ssh {
-		if repo.SSHURL != "" {
-			return repo.SSHURL
-		}
+// chooseScheme resolves which clone URL the remote should use.
+//
+// SSH is the default because it does not need a stored credential helper entry
+// and does not care about token expiry, but the choice is the user's: they are
+// shown both URLs, with the one they would end up with, before anything is
+// created. Passing -url skips the question.
+//
+// It returns the scheme and the URL it corresponds to, so the plan can show
+// exactly what the remote will point at.
+func chooseScheme(ask *prompt.Prompter, flagValue string, explicit bool, host, owner, name string, relevant bool) (scheme, remoteURL string, err error) {
+	want := strings.ToLower(strings.TrimSpace(flagValue))
+	if want == "" {
+		want = "ssh"
 	}
+	if want != "ssh" && want != "https" {
+		return "", "", fmt.Errorf("unknown -url %q (want ssh or https)", flagValue)
+	}
+	sshURL, httpsURL := forge.PreviewURLs(host, owner, name)
+	url := sshURL
+	if want == "https" {
+		url = httpsURL
+	}
+	if !relevant {
+		return want, url, nil
+	}
+
+	// Only one form is available; using the other is impossible.
+	if sshURL == "" {
+		return "https", httpsURL, nil
+	}
+	if httpsURL == "" {
+		return "ssh", sshURL, nil
+	}
+
+	// -yes, a pipe, or CI: take the flag's answer without asking. The check is
+	// on explicitness rather than on flagValue being non-empty, because -url
+	// has a default of "ssh" and is therefore never empty.
+	if explicit || !ask.Interactive() {
+		return want, url, nil
+	}
+
+	got := ask.Select("Remote URL", []prompt.Option{
+		{Label: "ssh", Value: "ssh", Detail: sshURL},
+		{Label: "https", Value: "https", Detail: httpsURL},
+	}, want)
+	if got == "https" {
+		return "https", httpsURL, nil
+	}
+	return "ssh", sshURL, nil
+}
+
+// pickRemoteURL returns the clone URL the remote should point at. The backend's
+// own answer wins when it has one, since only the server knows for sure; the
+// derived URL is the fallback.
+func pickRemoteURL(repo *forge.Repo, scheme string) string {
+	wantSSH := scheme != "https"
+	if wantSSH && repo.SSHURL != "" {
+		return repo.SSHURL
+	}
+	if !wantSSH && repo.CloneURL != "" {
+		return repo.CloneURL
+	}
+	// The requested form was not available; take whatever the backend gave us.
 	if repo.CloneURL != "" {
 		return repo.CloneURL
 	}
@@ -501,6 +572,9 @@ type createPlan struct {
 	Tool, Host, Owner, Name, Description, Branch, Dir, Remote string
 	Private                                                   bool
 	Push, Scaffold, SSH                                       bool
+	// RemoteURL is the clone URL the remote will be wired to. It is derived
+	// from the host before creation, so the plan shows the real target.
+	RemoteURL string
 	// Attach reports that an existing repository is being given a new
 	// remote rather than scaffolded from scratch.
 	Attach bool
@@ -527,6 +601,9 @@ func printPlan(p createPlan, c forge.Candidate) {
 			fmt.Printf("  local dir %s (branch %s)\n", p.Dir, p.Branch)
 		}
 		fmt.Printf("  remote    %s\n", p.Remote)
+		if p.RemoteURL != "" {
+			fmt.Printf("  remote url %s\n", p.RemoteURL)
+		}
 		push := "yes"
 		if !p.Push {
 			push = "no"
