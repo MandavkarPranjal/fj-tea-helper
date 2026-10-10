@@ -341,6 +341,7 @@ func run(argv []string) error {
 	req := forge.CreateRequest{
 		Login:         login.Name,
 		Owner:         owner,
+		Account:       selected.User(login.Name),
 		Name:          name,
 		Description:   o.description,
 		Private:       private,

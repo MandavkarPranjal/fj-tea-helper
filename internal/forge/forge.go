@@ -57,6 +57,10 @@ type CreateRequest struct {
 	Login string
 	// Owner is the account or organisation that will own the repo.
 	Owner string
+	// Account is the authenticated user on Login. It is used to tell an
+	// organisation apart from the user's own account, which some backends
+	// require: `tea repos create --owner` only accepts organisations.
+	Account string
 	// Name is the repository name.
 	Name string
 	// Description is an optional short summary.

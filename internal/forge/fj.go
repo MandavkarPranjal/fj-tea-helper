@@ -129,9 +129,38 @@ func (b fjBackend) CreateRepo(ctx context.Context, req CreateRequest) (*Repo, er
 
 	out, err := run(ctx, minEnv(), "fj", args...)
 	if err != nil {
-		return nil, wrapAuthError(ToolFj, req.Login, err)
+		wrapped := wrapAuthError(ToolFj, req.Login, err)
+		if hint := fjCreateHint(out); hint != nil {
+			return nil, fmt.Errorf("%w\n%w", wrapped, hint)
+		}
+		return nil, wrapped
 	}
 	return parseFjRepo(out, req)
+}
+
+// fjCreateBugError explains a failure that is a bug in fj rather than a
+// problem with the request. It is a dedicated type rather than an errors.New
+// call because the message spans several lines, which staticcheck's ST1005
+// rejects in a plain error string.
+type fjCreateBugError struct{}
+
+func (fjCreateBugError) Error() string {
+	return `hint: this is a bug in fj's "repo create", not a problem with your repository name.
+      Every name is rejected, while fj's other commands still work, so retrying
+      will not help. Workaround: use the tea backend (fth -tool tea ...) or
+      create the repository by hand.`
+}
+
+// fjCreateHint returns a hint when fj failed for a reason the user cannot act
+// on. `fj repo create` has been observed (v0.6.0, Codeberg) rejecting every
+// repository name with "validation failed: [Name]: AlphaDashDot", including
+// names made only of letters and digits, because it appears to send
+// "owner/name" where the API expects just the name.
+func fjCreateHint(out string) error {
+	if !strings.Contains(out, "AlphaDashDot") {
+		return nil
+	}
+	return fjCreateBugError{}
 }
 
 // fjRepoJSON is used opportunistically in case fj gains --output json.

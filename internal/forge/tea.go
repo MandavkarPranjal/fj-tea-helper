@@ -104,7 +104,11 @@ func (b teaBackend) CreateRepo(ctx context.Context, req CreateRequest) (*Repo, e
 	if req.Name != "" {
 		args = append(args, "--name", req.Name)
 	}
-	if req.Owner != "" {
+	// `tea repos create --owner` resolves the owner against the instance's
+	// *organisation* list. Passing your own account name there fails with
+	// "Error: not found", so omit it when the repo belongs to you and let tea
+	// default to the authenticated account.
+	if req.Owner != "" && !strings.EqualFold(req.Owner, req.Account) {
 		args = append(args, "--owner", req.Owner)
 	}
 	if req.Description != "" {
