@@ -186,6 +186,35 @@ restored cleanly even if the question is cancelled.
 - `Esc` or `Ctrl-C` at a prompt keeps the default rather than aborting, so a
   stray keystroke can't leave a half-created repository behind.
 
+## Colour
+
+Output is styled with [lipgloss](https://github.com/charmbracelet/lipgloss),
+which detects the terminal once at start-up:
+
+- **Bold** headings (`Plan`, `Backends`, `Licenses`)
+- **Faint** field labels, URLs and parenthetical detail, so the eye lands on the
+  values
+- **Green** check marks for completed steps and confirmed answers
+- **Yellow** warnings, **red** errors
+
+The styling is emitted only when the output is a capable terminal. Piping `fth`
+into a file or a pager produces plain text, as does `NO_COLOR=1 fth …`.
+
+Field labels are padded to a common width so values line up in a column
+regardless of how long the label is:
+
+```console
+$ fth myservice -dry-run
+Plan
+  backend    fj
+  instance   codeberg.org
+  repository you/myservice (public)
+  local dir  myservice (branch main)
+  remote     origin
+  remote url git@codeberg.org:you/myservice.git
+  push       yes
+```
+
 ## Backend detection
 
 `-tool auto` probes both CLIs and prefers `fj`, falling back to `tea`:
@@ -251,4 +280,5 @@ Layout:
 - `internal/scaffold` — local git repository creation and remote attach
   (`scaffold.go`, `repo.go`)
 - `internal/prompt` — Bubble Tea prompts: text input and arrow-key selection
+- `internal/ui` — colour and alignment, with automatic plain-text fallback
 - `internal/templates` — embedded SPDX licenses and `.gitignore` templates

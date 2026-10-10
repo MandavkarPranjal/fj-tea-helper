@@ -19,7 +19,40 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
+
+// styles carries the prompt's colour scheme. It is built from a renderer bound
+// to the prompt's own output stream rather than lipgloss's package-level
+// default, because fth prints progress to stdout but asks questions on stderr:
+// detecting the profile against stdout would strip colour from prompts in
+// exactly the case where the terminal is right there.
+type styles struct {
+	label   lipgloss.Style // question text
+	answer  lipgloss.Style // the settled answer
+	hint    lipgloss.Style // key hints and the suggested default
+	detail  lipgloss.Style // secondary text beside an option
+	marker  lipgloss.Style // the cursor
+	picked  lipgloss.Style // the highlighted option
+	option  lipgloss.Style // an ordinary option
+	input   lipgloss.Style // live text input
+	success lipgloss.Style // non-fatal notices
+}
+
+func newStyles(w io.Writer) styles {
+	r := lipgloss.NewRenderer(w)
+	return styles{
+		label:   r.NewStyle().Bold(true),
+		answer:  r.NewStyle().Foreground(r.Color("2")),
+		hint:    r.NewStyle().Faint(true),
+		detail:  r.NewStyle().Faint(true),
+		marker:  r.NewStyle().Foreground(r.Color("6")),
+		picked:  r.NewStyle().Foreground(r.Color("6")).Bold(true),
+		option:  r.NewStyle(),
+		input:   r.NewStyle(),
+		success: r.NewStyle().Foreground(r.Color("2")),
+	}
+}
 
 // Option is one choice in a selection prompt. Detail is shown alongside the
 // label and is normally the concrete value fth would use, so the user can see
@@ -35,6 +68,7 @@ type Prompter struct {
 	in          io.Reader
 	out         io.Writer
 	interactive bool
+	s           styles
 }
 
 // New returns a Prompter bound to in and out. In practice these are os.Stdin
@@ -46,7 +80,7 @@ type Prompter struct {
 // stderr is still a tty. Bubble Tea would then start up, fail to read, and
 // leave stray escape sequences behind on its way to the default answer.
 func New(in io.Reader, out io.Writer) *Prompter {
-	return &Prompter{in: in, out: out, interactive: isTerminal(in) && isTerminal(out)}
+	return &Prompter{in: in, out: out, interactive: isTerminal(in) && isTerminal(out), s: newStyles(out)}
 }
 
 // NonInteractive returns a Prompter that never asks anything and always returns

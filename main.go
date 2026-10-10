@@ -16,6 +16,7 @@ import (
 	"github.com/himmel/fj-tea-helper/internal/prompt"
 	"github.com/himmel/fj-tea-helper/internal/scaffold"
 	"github.com/himmel/fj-tea-helper/internal/templates"
+	"github.com/himmel/fj-tea-helper/internal/ui"
 )
 
 const version = "0.1.0"
@@ -55,7 +56,7 @@ func main() {
 	err := run(os.Args[1:])
 	forge.Cleanup()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintln(os.Stderr, ui.Errorf("%v", err))
 		os.Exit(1)
 	}
 }
@@ -222,7 +223,7 @@ func run(argv []string) error {
 	}
 	if !selected.Verified {
 		for _, n := range selected.Notes {
-			fmt.Fprintf(os.Stderr, "warning: %s\n", n)
+			fmt.Fprintln(os.Stderr, ui.Warnf("%s", n))
 		}
 	}
 
@@ -339,7 +340,7 @@ func run(argv []string) error {
 	printPlan(plan, selected)
 
 	if o.dryRun {
-		fmt.Println("\n(dry run: nothing was created)")
+		fmt.Println(ui.Dim("(dry run: nothing was created)"))
 		return nil
 	}
 
@@ -378,7 +379,7 @@ func run(argv []string) error {
 	if err != nil {
 		return fmt.Errorf("create remote repository: %w", err)
 	}
-	fmt.Printf("✓ created %s on %s (%s)\n", repo.FullName, login.Name, repo.WebURL)
+	fmt.Println(ui.Done(fmt.Sprintf("created %s on %s (%s)", repo.FullName, login.Name, ui.Dim(repo.WebURL))))
 
 	if o.noScaffold {
 		return nil
@@ -412,7 +413,7 @@ func run(argv []string) error {
 		if err != nil {
 			return fmt.Errorf("attach remote: %w", err)
 		}
-		fmt.Printf("✓ attached to existing repository %s (branch %s)\n", res.Dir, res.Branch)
+		fmt.Println(ui.Done("attached to existing repository " + res.Dir + " " + ui.Dim("(branch "+res.Branch+")")))
 	} else {
 		logf(o.verbose, "scaffolding %s\n", dir)
 		res, err = scaffold.Create(so,
@@ -427,18 +428,18 @@ func run(argv []string) error {
 		if err != nil {
 			return fmt.Errorf("scaffold: %w", err)
 		}
-		fmt.Printf("✓ scaffolded %s (branch %s)\n", res.Dir, res.Branch)
+		fmt.Println(ui.Done("scaffolded " + res.Dir + " " + ui.Dim("(branch "+res.Branch+")")))
 		for _, f := range res.FilesCreated {
-			fmt.Printf("  · %s\n", f)
+			fmt.Println("  " + ui.Dot(f))
 		}
 	}
 	if res.RemoteAdded {
-		fmt.Printf("  · remote %s → %s\n", res.RemoteName, res.RemoteURL)
+		fmt.Println("  " + ui.Dot("remote "+res.RemoteName+" → "+res.RemoteURL))
 	}
 
 	// 3. Push, unless suppressed.
 	if o.noPush {
-		fmt.Println("\nskipping push (-no-push)")
+		fmt.Println("\n" + ui.Dim("skipping push (-no-push)"))
 		return nil
 	}
 	logf(o.verbose, "pushing to %s (set-upstream=%v)\n", res.RemoteName, setUpstream)
@@ -446,15 +447,15 @@ func run(argv []string) error {
 		return fmt.Errorf("push: %w", err)
 	}
 	if setUpstream {
-		fmt.Printf("✓ pushed %s to %s (tracking %s)\n", res.Branch, res.RemoteName, res.RemoteName)
+		fmt.Println(ui.Done("pushed " + res.Branch + " to " + res.RemoteName + " " + ui.Dim("(tracking "+res.RemoteName+")")))
 	} else {
 		// Report what the upstream actually is, which may well be origin
 		// rather than nothing at all.
 		up := scaffold.CurrentUpstream(res.Dir, res.Branch)
 		if up == "" {
-			fmt.Printf("✓ pushed %s to %s (no upstream set)\n", res.Branch, res.RemoteName)
+			fmt.Println(ui.Done("pushed " + res.Branch + " to " + res.RemoteName + " " + ui.Dim("(no upstream set)")))
 		} else {
-			fmt.Printf("✓ pushed %s to %s (upstream %s)\n", res.Branch, res.RemoteName, up)
+			fmt.Println(ui.Done("pushed " + res.Branch + " to " + res.RemoteName + " " + ui.Dim("(upstream "+up+")")))
 		}
 	}
 	return nil
@@ -587,63 +588,63 @@ func printPlan(p createPlan, c forge.Candidate) {
 	if p.Private {
 		vis = "private"
 	}
-	fmt.Printf("Plan\n")
-	fmt.Printf("  backend   %s\n", p.Tool)
-	fmt.Printf("  instance  %s\n", p.Host)
-	fmt.Printf("  repository %s/%s (%s)\n", p.Owner, p.Name, vis)
+	fmt.Println(ui.Heading("Plan"))
+	fmt.Println(ui.Field("backend", ui.Value(p.Tool)))
+	fmt.Println(ui.Field("instance", ui.Value(p.Host)))
+	fmt.Println(ui.Field("repository", ui.Value(p.Owner+"/"+p.Name)+" "+ui.Dim("("+vis+")")))
 	if p.Description != "" {
-		fmt.Printf("  summary   %s\n", p.Description)
+		fmt.Println(ui.Field("summary", ui.Value(p.Description)))
 	}
 	if p.Scaffold {
 		if p.Attach {
-			fmt.Printf("  local dir %s (existing repo, branch %s)\n", p.Dir, p.Branch)
+			fmt.Println(ui.Field("local dir", ui.Value(p.Dir)+" "+ui.Dim("(existing repo, branch "+p.Branch+")")))
 		} else {
-			fmt.Printf("  local dir %s (branch %s)\n", p.Dir, p.Branch)
+			fmt.Println(ui.Field("local dir", ui.Value(p.Dir)+" "+ui.Dim("(branch "+p.Branch+")")))
 		}
-		fmt.Printf("  remote    %s\n", p.Remote)
+		fmt.Println(ui.Field("remote", ui.Value(p.Remote)))
 		if p.RemoteURL != "" {
-			fmt.Printf("  remote url %s\n", p.RemoteURL)
+			fmt.Println(ui.Field("remote url", ui.Dim(p.RemoteURL)))
 		}
-		push := "yes"
+		push := ui.Success("yes")
 		if !p.Push {
-			push = "no"
+			push = ui.Dim("no")
 		}
-		fmt.Printf("  push      %s\n", push)
+		fmt.Println(ui.Field("push", push))
 		if p.Push && p.Attach {
-			up := "no (origin stays upstream)"
+			up := ui.Dim("no (origin stays upstream)")
 			if p.Upstream {
-				up = p.Remote
+				up = ui.Value(p.Remote)
 			}
-			fmt.Printf("  upstream  %s\n", up)
+			fmt.Println(ui.Field("upstream", up))
 		}
 	}
 	fmt.Println()
 }
 
 func printList(candidates []forge.Candidate) {
-	fmt.Println("Backends")
+	fmt.Println(ui.Heading("Backends"))
 	for _, c := range candidates {
-		fmt.Printf("  %-4s %s\n", c.Name(), c.Status())
+		fmt.Printf("  %s %s\n", ui.Label(ui.Pad(c.Name(), 4)), ui.Value(c.Status()))
 		for _, l := range c.Logins {
 			user := c.Users[l.Name]
 			if user == "" {
 				user = "?"
 			}
-			mark := " "
+			mark := ui.Success("✓")
 			if user == "?" {
-				mark = "!"
+				mark = ui.Warn("!")
 			}
-			fmt.Printf("       %s %-24s user=%s\n", mark, l.Name, user)
+			fmt.Printf("     %s %s %s\n", mark, ui.Value(ui.Pad(l.Name, 24)), ui.Dim("user="+user))
 		}
 		for _, n := range c.Notes {
-			fmt.Printf("       note: %s\n", n)
+			fmt.Printf("       %s %s\n", ui.Warn("note:"), ui.Dim(n))
 		}
 	}
 	fmt.Println()
-	fmt.Println("Licenses")
+	fmt.Println(ui.Heading("Licenses"))
 	for _, id := range templates.LicenseIDs() {
 		l := templates.Licenses[id]
-		fmt.Printf("  %-14s %s\n", l.ID, l.Title)
+		fmt.Printf("  %s %s\n", ui.Value(ui.Pad(l.ID, 14)), ui.Dim(l.Title))
 	}
 	fmt.Println()
 }
