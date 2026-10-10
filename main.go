@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/himmel/fj-tea-helper/internal/forge"
+	"github.com/himmel/fj-tea-helper/internal/progress"
 	"github.com/himmel/fj-tea-helper/internal/prompt"
 	"github.com/himmel/fj-tea-helper/internal/scaffold"
 	"github.com/himmel/fj-tea-helper/internal/templates"
@@ -202,7 +203,12 @@ func run(argv []string) error {
 	if o.tool != "" && o.tool != "auto" {
 		tools = []forge.Tool{forge.Tool(o.tool)}
 	}
+	// Probing logins means a handful of network round-trips, so it is worth
+	// showing that something is happening rather than a blank screen.
+	spin := progress.New(os.Stderr)
+	spin.Start("detecting backend")
 	candidates, err := forge.Detect(ctx, tools)
+	spin.Stop()
 	if err != nil {
 		return err
 	}
@@ -375,7 +381,9 @@ func run(argv []string) error {
 	}
 
 	logf(o.verbose, "creating %s/%s on %s via %s...\n", owner, name, login.Name, selected.Name())
+	spin.Start("creating " + owner + "/" + name + " on " + login.Name)
 	repo, err := selected.Backend.CreateRepo(ctx, req)
+	spin.Stop()
 	if err != nil {
 		return fmt.Errorf("create remote repository: %w", err)
 	}
@@ -443,7 +451,10 @@ func run(argv []string) error {
 		return nil
 	}
 	logf(o.verbose, "pushing to %s (set-upstream=%v)\n", res.RemoteName, setUpstream)
-	if err := scaffold.Push(res.Dir, res.RemoteName, res.Branch, setUpstream); err != nil {
+	spin.Start("pushing " + res.Branch + " to " + res.RemoteName)
+	err = scaffold.Push(res.Dir, res.RemoteName, res.Branch, setUpstream)
+	spin.Stop()
+	if err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 	if setUpstream {

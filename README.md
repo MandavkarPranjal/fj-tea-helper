@@ -190,6 +190,27 @@ Questions are styled too: the question is bold, the highlighted answer is
 accent-coloured along with its cursor, option details are faint, and the
 confirmed answer is echoed in green once you pick it.
 
+## Progress
+
+The steps that talk to a network show an indeterminate spinner on the line
+above the plan or the result:
+
+```console
+⠋ detecting backend
+⠋ creating you/myservice on codeberg.org
+✓ created you/myservice on codeberg.org (https://codeberg.org/you/myservice)
+⠋ pushing main to origin
+✓ pushed main to origin (tracking origin)
+```
+
+There is deliberately **no progress bar**. Git cannot report a meaningful
+percentage for a push, and the other steps finish in well under a second, so a
+bar would either lie or flash past. A spinner only claims what it knows: the
+work is still going.
+
+The spinner draws nothing when output is not a terminal, so piping `fth`
+produces exactly the plain text it always did.
+
 ## Colour
 
 Output is styled with [lipgloss](https://github.com/charmbracelet/lipgloss),
@@ -289,4 +310,5 @@ Layout:
   (`scaffold.go`, `repo.go`)
 - `internal/prompt` — Bubble Tea prompts: text input and arrow-key selection
 - `internal/ui` — colour and alignment, with automatic plain-text fallback
+- `internal/progress` — indeterminate spinner for the network-bound steps
 - `internal/templates` — embedded SPDX licenses and `.gitignore` templates
