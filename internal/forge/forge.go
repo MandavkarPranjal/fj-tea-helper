@@ -18,7 +18,28 @@ const (
 	ToolTea Tool = "tea"
 	// ToolFj is the Forgejo `fj` CLI.
 	ToolFj Tool = "fj"
+	// ToolCafe is the GitCafe `cafe` CLI.
+	ToolCafe Tool = "cafe"
 )
+
+// AllTools lists every supported backend, in the order `-tool auto` probes
+// them.
+func AllTools() []Tool { return []Tool{ToolFj, ToolTea, ToolCafe} }
+
+// InstallHint returns the one-line "here is how to get this tool" message for
+// a backend. It is the fix, not just the diagnosis, so every "not installed"
+// path should surface it.
+func InstallHint(tool Tool) string {
+	switch tool {
+	case ToolTea:
+		return "install it with: go install code.gitea.io/tea/cmd/tea@latest"
+	case ToolFj:
+		return "install it from https://codeberg.org/forgejo/forgejo-cli/releases"
+	case ToolCafe:
+		return cafeInstallHint
+	}
+	return ""
+}
 
 // ErrNotFound is returned when a requested tool is not installed on PATH.
 var ErrNotFound = errors.New("cli not found on PATH")
@@ -37,6 +58,9 @@ type Backend interface {
 	CreateRepo(ctx context.Context, req CreateRequest) (*Repo, error)
 	// WhoAmI returns the authenticated user for a given host (best effort).
 	WhoAmI(ctx context.Context, login string) (string, error)
+	// LoginHint returns the command that authenticates this tool, used when no
+	// working login could be found.
+	LoginHint() string
 }
 
 // Login describes one authenticated instance.
@@ -98,16 +122,41 @@ type Repo struct {
 	Name  string
 }
 
+// Option customises a backend before it is handed out by Discover. It receives
+// the backend and returns the configured replacement, since backends are value
+// types held in an interface and cannot be mutated in place.
+type Option func(Backend) Backend
+
+// WithCafeBin points the cafe backend at an explicit binary. `cafe` ships as
+// an npm package driven by Bun, so unlike tea and fj it is not something a user
+// is likely to have on PATH already. This lets fth use a known-good location
+// instead of refusing to run.
+func WithCafeBin(path string) Option {
+	return func(b Backend) Backend {
+		c, ok := b.(cafeBackend)
+		if !ok || path == "" {
+			return b
+		}
+		c.bin = path
+		return c
+	}
+}
+
 // Discover returns a backend for the given tool if its binary is present.
-func Discover(tool Tool) (Backend, error) {
+func Discover(tool Tool, opts ...Option) (Backend, error) {
 	var b Backend
 	switch tool {
 	case ToolTea:
 		b = teaBackend{}
 	case ToolFj:
 		b = fjBackend{}
+	case ToolCafe:
+		b = cafeBackend{}
 	default:
-		return nil, fmt.Errorf("unknown tool %q", tool)
+		return nil, fmt.Errorf("unknown tool %q (want %s)", tool, AllTools())
+	}
+	for _, o := range opts {
+		b = o(b)
 	}
 	return b, nil
 }

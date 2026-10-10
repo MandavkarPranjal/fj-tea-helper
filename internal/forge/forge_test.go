@@ -2,6 +2,7 @@ package forge
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -154,5 +155,55 @@ func TestResolveLogin(t *testing.T) {
 	}
 	if _, err := ResolveLogin(c, "z.com"); err == nil {
 		t.Error("expected error for unknown host")
+	}
+}
+
+// run() folds CLI output into the errors it returns, so anything a backend
+// prints can reach a terminal or a log. Credentials must never survive that.
+func TestRedactSecrets(t *testing.T) {
+	for _, tc := range []struct {
+		name, in string
+		want     string
+	}{
+		{
+			name: "json token",
+			in:   `{"data":{"username":"u","token":"gct_3a32XXXXXX291f"}}`,
+			want: `{"data":{"username":"u","token":"[redacted]"}}`,
+		},
+		{
+			name: "bare token prefix",
+			in:   "authorization failed for gct_abcdef0123456789",
+			want: "authorization failed for [redacted]",
+		},
+		{
+			name: "github token",
+			in:   "using ghp_0123456789abcdefghij",
+			want: "using [redacted]",
+		},
+		{
+			name: "yaml style password",
+			in:   "password = hunter2hunter2",
+			want: "password = [redacted]",
+		},
+		{
+			name: "unrelated text is untouched",
+			in:   "repository owner/name already exists",
+			want: "repository owner/name already exists",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactSecrets(tc.in); got != tc.want {
+				t.Errorf("redactSecrets(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// Redaction must not corrupt JSON, since the backends parse what they print.
+func TestRedactSecretsKeepsJSONValid(t *testing.T) {
+	in := `{"data":{"host":"git.cafe","username":"u","token":"gct_3a32XXXXXX291f"}}`
+	var v map[string]any
+	if err := json.Unmarshal([]byte(redactSecrets(in)), &v); err != nil {
+		t.Fatalf("redacted output is not valid JSON: %v", err)
 	}
 }

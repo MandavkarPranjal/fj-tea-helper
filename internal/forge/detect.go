@@ -35,16 +35,16 @@ func (c Candidate) Name() string { return string(c.Backend.Tool()) }
 
 // Detect inspects every supported tool and returns the candidates, ordered by
 // preference (Forgejo's `fj` first, since it is the platform-native client).
-func Detect(ctx context.Context, tools []Tool) ([]Candidate, error) {
+func Detect(ctx context.Context, tools []Tool, opts ...Option) ([]Candidate, error) {
 	var out []Candidate
 	for _, t := range tools {
-		b, err := Discover(t)
+		b, err := Discover(t, opts...)
 		if err != nil {
 			return nil, err
 		}
 		if !b.Available(ctx) {
 			out = append(out, Candidate{Backend: b, Users: map[string]string{},
-				Notes: []string{fmt.Sprintf("%s is not installed on PATH", t)}})
+				Notes: []string{fmt.Sprintf("%s is not installed on PATH%s", t, hintSuffix(t))}})
 			continue
 		}
 		c := Candidate{Backend: b, Users: map[string]string{}}
@@ -82,12 +82,12 @@ func Select(ctx context.Context, candidates []Candidate, want string) (Candidate
 		for _, c := range candidates {
 			if c.Name() == want {
 				if !c.Backend.Available(ctx) {
-					return c, fmt.Errorf("%s is not installed on PATH", want)
+					return c, fmt.Errorf("%s is not installed on PATH%s", want, hintSuffix(c.Backend.Tool()))
 				}
 				return c, nil
 			}
 		}
-		return Candidate{}, fmt.Errorf("unknown tool %q (want tea or fj)", want)
+		return Candidate{}, fmt.Errorf("unknown tool %q (want %s)", want, strings.Join(toolNames(candidates), ", "))
 	}
 	var usable []Candidate
 	for _, c := range candidates {
@@ -96,7 +96,9 @@ func Select(ctx context.Context, candidates []Candidate, want string) (Candidate
 		}
 	}
 	if len(usable) == 0 {
-		return Candidate{}, fmt.Errorf("no authenticated %s login found; log in first (tea login add / fj auth login)", strings.Join(toolNames(candidates), " or "))
+		return Candidate{}, fmt.Errorf("no authenticated %s login found; log in first (%s)",
+			strings.Join(toolNames(candidates), " or "),
+			strings.Join(loginHints(candidates), " / "))
 	}
 	return usable[0], nil
 }
@@ -160,4 +162,44 @@ func toolNames(cs []Candidate) []string {
 		out = append(out, c.Name())
 	}
 	return out
+}
+
+// loginHint is the command that establishes credentials for a tool.
+func loginHint(t Tool) string {
+	switch t {
+	case ToolTea:
+		return "tea login add"
+	case ToolFj:
+		return "fj auth login"
+	case ToolCafe:
+		return "cafe auth login"
+	}
+	return fmt.Sprintf("%s login", t)
+}
+
+// loginHints lists the login command for every tool that is actually
+// installed, so a user without any of them is told what to go install first.
+func loginHints(cs []Candidate) []string {
+	var out []string
+	for _, c := range cs {
+		if !c.Backend.Available(context.Background()) {
+			continue
+		}
+		out = append(out, loginHint(c.Backend.Tool()))
+	}
+	if len(out) == 0 {
+		for _, c := range cs {
+			out = append(out, loginHint(c.Backend.Tool()))
+		}
+	}
+	return out
+}
+
+// hintSuffix turns an InstallHint into a trailing clause for an error message.
+func hintSuffix(t Tool) string {
+	h := InstallHint(t)
+	if h == "" {
+		return ""
+	}
+	return "; " + h
 }

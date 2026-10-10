@@ -13,6 +13,8 @@ type fjBackend struct{}
 // Tool implements Backend.
 func (fjBackend) Tool() Tool { return ToolFj }
 
+func (fjBackend) LoginHint() string { return "fj auth login" }
+
 // Available implements Backend.
 func (fjBackend) Available(ctx context.Context) bool {
 	_, err := lookPath("fj")

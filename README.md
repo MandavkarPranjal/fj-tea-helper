@@ -1,7 +1,7 @@
 # fth
 
-**fth** (*fj-tea-helper*) creates a new repository on Forgejo or Gitea in one
-command, using the `fj` (Forgejo) or `tea` (Gitea) CLI as the engine.
+**fth** (*fj-tea-helper*) creates a new repository on Forgejo, Gitea or GitCafe
+in one command, using the `fj`, `tea` or `cafe` CLI as the engine.
 
 It detects which CLI you're authenticated against, creates the remote
 repository, scaffolds a local git repository with `README.md`, `.gitignore` and
@@ -39,8 +39,8 @@ mise tasks              # list all tasks
 ```
 
 `mise.toml` pins Go 1.27 and golangci-lint, so no manual toolchain setup is
-needed. At runtime the binary shells out to `fj` and/or `tea`, whichever you
-have authenticated. `git` must be on `PATH`.
+needed. At runtime the binary shells out to whichever of `fj`, `tea` or `cafe`
+you have authenticated. `git` must be on `PATH`.
 
 ## Usage
 
@@ -57,7 +57,8 @@ Flags may appear before or after the name, so `fth myproject -private` and
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `-tool` | `auto` | Backend CLI: `auto`, `tea`, or `fj` |
+| `-tool` | `auto` | Backend CLI: `auto`, `tea`, `fj`, or `cafe` |
+| `-cafe-bin` | `cafe` on PATH | Explicit path to the `cafe` binary |
 | `-host` | detected | Instance host, e.g. `gitea.com` |
 | `-owner` | your account | Repository owner or organisation |
 | `-description` | – | Short repository description |
@@ -94,6 +95,9 @@ fth -tool fj -host codeberg.org -visibility private myservice
 
 # Force Gitea, an org-owned repo, Apache-2.0, no local scaffold
 fth -tool tea -owner myorg -license Apache-2.0 -no-scaffold myservice
+
+# Force GitCafe, using a cafe binary that is not on PATH
+fth -tool cafe -cafe-bin ~/.bun/install/global/node_modules/@gitcafe/cli/bin/cafe.js myservice
 
 # Create the repo and local dir, but decide about pushing later
 fth -no-push myservice
@@ -246,26 +250,62 @@ Plan
 
 ## Backend detection
 
-`-tool auto` probes both CLIs and prefers `fj`, falling back to `tea`:
+`-tool auto` probes all three CLIs in order and takes the first that
+authenticates: `fj`, then `tea`, then `cafe`.
 
-1. Run `fj auth list` / `tea logins list -o json` to find configured logins.
+1. Run `fj auth list` / `tea logins list -o json` / `cafe auth status --json` to
+   find configured logins.
 2. Confirm a login actually works — for `fj` this means `fj whoami`, because
    `fj auth list` happily reports instances whose stored OAuth grant has been
    revoked.
-3. Prefer `fj` if it authenticates, otherwise `tea`. If both work, `fj` wins.
+3. Prefer whichever authenticates, in that order. Name one explicitly with
+   `-tool` to skip the probe entirely.
 
 Use `-list` to see exactly what was detected:
 
 ```console
 $ fth -list
 Backends
-  fj   installed, no working login
-       ! codeberg.org             user=?
-       note: login "codeberg.org" unusable: api error: grant does not exist
-             Authenticate with: fj auth login --host codeberg.org
+  fj   fj 0.6.0
+        ✓ codeberg.org             user=MandavkarPranjal
   tea  tea 0.15.1
-         gitea.com                user=MandavkarPranjal
+        ✓ gitea.com               user=MandavkarPranjal
+  cafe cafe 0.6.0
+        ✓ git.cafe                user=mandavkarpranjal
 ```
+
+A backend that is missing is reported with how to install it:
+
+```console
+  cafe not installed on PATH; install it with: bun install -g @gitcafe/cli
+```
+
+### GitCafe
+
+`cafe` ([git.cafe](https://git.cafe)) ships as the npm package `@gitcafe/cli`
+and runs under Bun, not Node. Install it globally:
+
+```sh
+bun install -g @gitcafe/cli
+```
+
+`fth` never falls back to `bunx @gitcafe/cli`, because that re-resolves a
+multi-megabyte bundle on every invocation — far more expensive than the
+repository creation it would be doing. If you keep the CLI somewhere unusual,
+point `fth` straight at it:
+
+```sh
+fth -tool cafe -cafe-bin /path/to/cafe.js myproject
+```
+
+Note that `cafe auth status` prints an access token, even in `--json` form.
+`fth` scrubs credential-shaped values out of everything it captures before it
+reaches an error message or the log, but treat any `cafe` output you paste into
+a bug report with the same care.
+
+Unlike `tea`, `cafe` accepts a personal account for its owner flag, so `--org`
+is only sent for real organisations. `fj` and `cafe` cannot seed templates
+server-side (see below), so both take the local-scaffold path.
 
 ## Behaviour notes
 
@@ -274,11 +314,15 @@ Backends
   leave an orphan repo on your server. An existing git repository *is* usable —
   see [Publishing an existing git repository](#publishing-an-existing-git-repository).
 - **Templates are generated locally, not by the server.** `tea` can seed
-  `.gitignore`/`LICENSE`/`README` server-side, but `fj` cannot, so both paths
-  behave the same: the helper writes the files and pushes them.
-- **Backend commands run from a scratch directory.** Both CLIs infer a
+  `.gitignore`/`LICENSE`/`README` server-side, but `fj` and `cafe` cannot, so
+  every path behaves the same: the helper writes the files and pushes them.
+- **Backend commands run from a scratch directory.** All three CLIs can infer a
   repository from `$PWD`; running them from a neutral directory stops an
   unrelated local checkout from leaking into the operation.
+- **Credentials are scrubbed from captured output.** `run` folds a command's
+  output into the error it returns, so credential-shaped values are redacted
+  before anything becomes user-visible. `cafe auth status` prints a live token
+  even in JSON form, which makes this a live concern rather than a precaution.
 - **Remotes are never repointed.** If the chosen remote name already exists with
   a different URL, `fth` stops with an error instead of rewriting your remote.
 - **Pushes are never forced.** A non-fast-forward push fails with git's own
@@ -304,8 +348,8 @@ Layout:
 
 - `main.go` — CLI parsing, flags, orchestration
 - `mise.toml` — pinned toolchain (Go, golangci-lint) and task definitions
-- `internal/forge` — backend abstraction over `tea` and `fj`
-  (`forge.go`, `tea.go`, `fj.go`, `detect.go`, `exec.go`)
+- `internal/forge` — backend abstraction over `tea`, `fj` and `cafe`
+  (`forge.go`, `tea.go`, `fj.go`, `cafe.go`, `detect.go`, `exec.go`)
 - `internal/scaffold` — local git repository creation and remote attach
   (`scaffold.go`, `repo.go`)
 - `internal/prompt` — Bubble Tea prompts: text input and arrow-key selection

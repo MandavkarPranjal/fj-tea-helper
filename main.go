@@ -25,6 +25,7 @@ const version = "0.1.0"
 type options struct {
 	name        string
 	tool        string
+	cafeBin     string
 	host        string
 	owner       string
 	description string
@@ -116,7 +117,8 @@ func run(argv []string) error {
 	fs := flag.NewFlagSet("fth", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-	fs.StringVar(&o.tool, "tool", "auto", "backend CLI to use: auto, tea, or fj")
+	fs.StringVar(&o.tool, "tool", "auto", "backend CLI to use: auto, tea, fj, or cafe")
+	fs.StringVar(&o.cafeBin, "cafe-bin", "", "path to the cafe binary, if it is not on PATH")
 	fs.StringVar(&o.host, "host", "", "instance host to create on (e.g. gitea.com)")
 	fs.StringVar(&o.owner, "owner", "", "repository owner (default: your account)")
 	fs.StringVar(&o.description, "description", "", "short repository description")
@@ -199,7 +201,7 @@ func run(argv []string) error {
 
 	// Detection is needed for -list and for the real run. When the backend is
 	// named explicitly there is no need to probe the other CLI.
-	tools := []forge.Tool{forge.ToolFj, forge.ToolTea}
+	tools := forge.AllTools()
 	if o.tool != "" && o.tool != "auto" {
 		tools = []forge.Tool{forge.Tool(o.tool)}
 	}
@@ -207,7 +209,7 @@ func run(argv []string) error {
 	// showing that something is happening rather than a blank screen.
 	spin := progress.New(os.Stderr)
 	spin.Start("detecting backend")
-	candidates, err := forge.Detect(ctx, tools)
+	candidates, err := forge.Detect(ctx, tools, forge.WithCafeBin(o.cafeBin))
 	spin.Stop()
 	if err != nil {
 		return err
@@ -667,16 +669,16 @@ func logf(verbose bool, format string, args ...any) {
 }
 
 func usage(fs *flag.FlagSet) {
-	fmt.Fprintf(os.Stderr, `fth %s — create a Forgejo/Gitea repo via fj or tea
+	fmt.Fprintf(os.Stderr, `fth %s — create a repo on Forgejo, Gitea or GitCafe
 
 Usage:
   fth [flags] <name>
   fth [flags] <owner>/<name>
   fth -list
 
-It detects whether 'fj' (Forgejo) or 'tea' (Gitea) is authenticated, creates
-the remote repository, scaffolds a local git repo with README/.gitignore/
-LICENSE, adds the remote and pushes the initial commit.
+It detects whether 'fj' (Forgejo), 'tea' (Gitea) or 'cafe' (GitCafe) is
+authenticated, creates the remote repository, scaffolds a local git repo with
+README/.gitignore/LICENSE, adds the remote and pushes the initial commit.
 
 Flags:
 `, version)
@@ -686,6 +688,7 @@ Examples:
   fth myproject
   fth -tool fj -host codeberg.org -private -lang go myproject
   fth -tool tea -license MIT -lang node myproject
+  fth -tool cafe -cafe-bin ~/.bun/install/global/node_modules/@gitcafe/cli/bin/cafe.js myproject
   fth -no-push -no-scaffold myproject
 `)
 	_ = time.Now

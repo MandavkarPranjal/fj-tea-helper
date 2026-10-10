@@ -12,6 +12,8 @@ type teaBackend struct{}
 // Tool implements Backend.
 func (teaBackend) Tool() Tool { return ToolTea }
 
+func (teaBackend) LoginHint() string { return "tea login add" }
+
 // Available implements Backend.
 func (b teaBackend) Available(ctx context.Context) bool {
 	_, err := lookPath("tea")

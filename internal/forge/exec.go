@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -83,7 +84,28 @@ var invisibleRe = regexp.MustCompile("[\u200B-\u200F\u2060-\u2069\u00AD\uFEFF]")
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 // clean removes ANSI escapes and invisible control characters.
-func clean(s string) string { return invisibleRe.ReplaceAllString(stripANSI(s), "") }
+func clean(s string) string { return redactSecrets(invisibleRe.ReplaceAllString(stripANSI(s), "")) }
+
+// secretFieldRe matches a credential inside a JSON-ish payload. The quote
+// characters are captured rather than consumed so that redacting a value does
+// not turn valid JSON into invalid JSON.
+var secretFieldRe = regexp.MustCompile(`(?i)("?\b(?:access[_-]?token|api[_-]?token|token|secret|password|passwd|authorization)\b"?)(\s*[:=]\s*)("?)[A-Za-z0-9._\-+/=]{8,}("?)`)
+
+// secretTokenRe catches credentials fth has no field name for, such as the
+// GitCafe "gct_" prefix.
+var secretTokenRe = regexp.MustCompile(`\b(?:gct|gh[pousr]|glpat|forgejo)_[A-Za-z0-9._\-]{8,}`)
+
+// redactSecrets blanks out credentials in captured CLI output.
+//
+// `run` folds a command's output into the error it returns, so anything the
+// CLIs print becomes user-visible. `cafe auth status` prints an access token
+// even in its JSON form, which means without this a routine "who am I" check
+// could leak a live credential into a terminal, a log, or a bug report. The
+// values are never needed by fth, so scrubbing them costs nothing.
+func redactSecrets(s string) string {
+	s = secretFieldRe.ReplaceAllString(s, "${1}${2}${3}[redacted]${4}")
+	return secretTokenRe.ReplaceAllString(s, "[redacted]")
+}
 
 // versionTokenRe matches a bare version number such as "0.15.1" or "v0.6.0".
 var versionTokenRe = regexp.MustCompile(`^v?\d+(\.\d+)+`)
@@ -155,6 +177,9 @@ func authHint(tool Tool, host string) string {
 	if tool == ToolTea {
 		return fmt.Sprintf("Authenticate with: tea login add --name %s --url https://%s", host, host)
 	}
+	if tool == ToolCafe {
+		return fmt.Sprintf("Authenticate with: cafe auth login --host https://%s/api", host)
+	}
 	return fmt.Sprintf("Authenticate with: fj auth login --host %s", host)
 }
 
@@ -191,6 +216,19 @@ func wrapAuthError(tool Tool, host string, err error) error {
 		return fmt.Errorf("%w\n%s", err, authHint(tool, host))
 	}
 	return err
+}
+
+// hostOfLogin is the bare host a CreateRequest targets, with any scheme or
+// path stripped. Used for auth hints.
+func hostOfLogin(req CreateRequest) string {
+	h := req.Login
+	if h == "" {
+		h = req.Owner
+	}
+	if u, err := url.Parse(h); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return strings.TrimPrefix(strings.TrimSuffix(h, "/api"), "https://")
 }
 
 var _ = errors.Is
