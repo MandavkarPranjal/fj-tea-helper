@@ -64,13 +64,31 @@ func TestCreateRefusesNonEmptyDir(t *testing.T) {
 	}
 }
 
-func TestPrecheckCatchesExistingRepo(t *testing.T) {
+func TestPrecheckAllowsExistingRepo(t *testing.T) {
+	// An existing repository must get through: fth attaches a remote to it
+	// instead of scaffolding over it. Refusing here is what previously
+	// stopped the remote repository from ever being created.
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+	for _, args := range [][]string{
+		{"init", "--quiet"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "user.name", "T"},
+	} {
+		if _, err := git(dir, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Precheck(dir, false); err == nil {
-		t.Error("expected Precheck to reject an existing git repository")
+	if _, err := git(dir, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(dir, "commit", "--quiet", "-m", "init"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Precheck(dir, false); err != nil {
+		t.Errorf("expected existing repo to be allowed, got %v", err)
 	}
 }
 

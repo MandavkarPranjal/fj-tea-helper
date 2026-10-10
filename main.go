@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/himmel/fj-tea-helper/internal/forge"
+	"github.com/himmel/fj-tea-helper/internal/prompt"
 	"github.com/himmel/fj-tea-helper/internal/scaffold"
 	"github.com/himmel/fj-tea-helper/internal/templates"
 )
@@ -42,6 +43,7 @@ type options struct {
 	year        int
 	holder      string
 	dryRun      bool
+	yes         bool
 	list        bool
 	showVersion bool
 	verbose     bool
@@ -131,6 +133,7 @@ func run(argv []string) error {
 	fs.IntVar(&o.year, "year", 0, "copyright year for the license (default: this year)")
 	fs.StringVar(&o.holder, "holder", "", "copyright holder for the license (default: your account)")
 	fs.BoolVar(&o.dryRun, "dry-run", false, "show what would happen without changing anything")
+	fs.BoolVar(&o.yes, "yes", false, "accept the default answer for every prompt (for scripts and CI)")
 	fs.BoolVar(&o.list, "list", false, "list detected backends, logins and licenses, then exit")
 	fs.BoolVar(&o.showVersion, "version", false, "print the helper version and exit")
 	fs.BoolVar(&o.verbose, "verbose", false, "print the underlying CLI commands")
@@ -144,6 +147,17 @@ func run(argv []string) error {
 		}
 		return err
 	}
+
+	// fs.Visit only reports flags the user actually passed, which is how we
+	// tell an explicit -remote from its default. That distinction decides
+	// whether a taken remote name is a conflict or merely something to ask
+	// about.
+	explicitRemote := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "remote" {
+			explicitRemote = true
+		}
+	})
 
 	if o.showVersion {
 		fmt.Printf("fth %s\n", version)
@@ -245,6 +259,52 @@ func run(argv []string) error {
 		dir = name
 	}
 
+	// Inspect the destination before planning anything. An existing
+	// repository is attached to rather than scaffolded over, and asking for a
+	// remote name now keeps every prompt ahead of the first side effect.
+	ask := prompt.New(os.Stdin, os.Stderr)
+	if o.yes {
+		ask = prompt.NonInteractive(os.Stderr)
+	}
+
+	var local *scaffold.LocalState
+	if !o.noScaffold {
+		state, err := scaffold.Inspect(dir)
+		if err != nil {
+			return err
+		}
+		local = state
+	}
+
+	remoteName := o.remote
+	if remoteName == "" {
+		remoteName = "origin"
+	}
+	localBranch := branch
+	setUpstream := true
+	attach := local != nil && local.IsRepo && local.HasCommits
+
+	if attach {
+		localBranch = local.Branch
+		if localBranch == "" {
+			return fmt.Errorf("%s has no branch to push; make a commit first", local.Dir)
+		}
+		if local.RemoteExists(remoteName) {
+			if explicitRemote {
+				return fmt.Errorf("remote %q already exists in %s; pick another name with -remote", remoteName, local.Dir)
+			}
+			remoteName = askForRemoteName(ask, local, login.Name, remoteName)
+			// The repository already has an origin and we are not taking it
+			// over, so tracking stays with origin unless the user says
+			// otherwise.
+			setUpstream = false
+			if remoteName != "origin" {
+				setUpstream = ask.YesNo(
+					fmt.Sprintf("Set %q as upstream for branch %s?", remoteName, localBranch), false)
+			}
+		}
+	}
+
 	// Build the plan before touching anything, so -dry-run is meaningful.
 	plan := createPlan{
 		Tool:        selected.Name(),
@@ -253,12 +313,14 @@ func run(argv []string) error {
 		Name:        name,
 		Description: o.description,
 		Private:     private,
-		Branch:      branch,
+		Branch:      localBranch,
 		Dir:         dir,
-		Remote:      o.remote,
+		Remote:      remoteName,
 		Push:        !o.noPush,
 		Scaffold:    !o.noScaffold,
 		SSH:         o.ssh,
+		Attach:      attach,
+		Upstream:    setUpstream,
 	}
 	printPlan(plan, selected)
 
@@ -307,7 +369,8 @@ func run(argv []string) error {
 		return nil
 	}
 
-	// 2. Scaffold the local repository.
+	// 2. Wire up the local repository: scaffold a new one, or just attach the
+	// remote to the repository the user already has.
 	holder := o.holder
 	if holder == "" {
 		holder = owner
@@ -321,28 +384,38 @@ func run(argv []string) error {
 		LicenseHolder: holder,
 		CopyrightYear: o.year,
 		Language:      o.lang,
-		DefaultBranch: branch,
-		RemoteName:    o.remote,
+		DefaultBranch: localBranch,
+		RemoteName:    remoteName,
 		RemoteURL:     pickRemoteURL(repo, o.ssh),
 		Force:         o.force,
 	}
 
-	logf(o.verbose, "scaffolding %s\n", dir)
-	res, err := scaffold.Create(so,
-		func(spdx string, year int, holder string) (string, error) {
-			if spdx == "custom" {
-				return readLicenseFile(o.licenseFile)
-			}
-			l, _ := templates.LicenseByID(spdx)
-			return l.Render(year, holder)
-		},
-		templates.Gitignore)
-	if err != nil {
-		return fmt.Errorf("scaffold: %w", err)
-	}
-	fmt.Printf("✓ scaffolded %s (branch %s)\n", res.Dir, res.Branch)
-	for _, f := range res.FilesCreated {
-		fmt.Printf("  · %s\n", f)
+	var res *scaffold.Result
+	if attach {
+		logf(o.verbose, "attaching remote %s to %s\n", remoteName, dir)
+		res, err = scaffold.Attach(dir, so)
+		if err != nil {
+			return fmt.Errorf("attach remote: %w", err)
+		}
+		fmt.Printf("✓ attached to existing repository %s (branch %s)\n", res.Dir, res.Branch)
+	} else {
+		logf(o.verbose, "scaffolding %s\n", dir)
+		res, err = scaffold.Create(so,
+			func(spdx string, year int, holder string) (string, error) {
+				if spdx == "custom" {
+					return readLicenseFile(o.licenseFile)
+				}
+				l, _ := templates.LicenseByID(spdx)
+				return l.Render(year, holder)
+			},
+			templates.Gitignore)
+		if err != nil {
+			return fmt.Errorf("scaffold: %w", err)
+		}
+		fmt.Printf("✓ scaffolded %s (branch %s)\n", res.Dir, res.Branch)
+		for _, f := range res.FilesCreated {
+			fmt.Printf("  · %s\n", f)
+		}
 	}
 	if res.RemoteAdded {
 		fmt.Printf("  · remote %s → %s\n", res.RemoteName, res.RemoteURL)
@@ -353,12 +426,47 @@ func run(argv []string) error {
 		fmt.Println("\nskipping push (-no-push)")
 		return nil
 	}
-	logf(o.verbose, "pushing to %s\n", res.RemoteName)
-	if err := scaffold.Push(res.Dir, res.RemoteName, res.Branch); err != nil {
+	logf(o.verbose, "pushing to %s (set-upstream=%v)\n", res.RemoteName, setUpstream)
+	if err := scaffold.Push(res.Dir, res.RemoteName, res.Branch, setUpstream); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
-	fmt.Printf("✓ pushed %s to %s\n", res.Branch, res.RemoteName)
+	if setUpstream {
+		fmt.Printf("✓ pushed %s to %s (tracking %s)\n", res.Branch, res.RemoteName, res.RemoteName)
+	} else {
+		// Report what the upstream actually is, which may well be origin
+		// rather than nothing at all.
+		up := scaffold.CurrentUpstream(res.Dir, res.Branch)
+		if up == "" {
+			fmt.Printf("✓ pushed %s to %s (no upstream set)\n", res.Branch, res.RemoteName)
+		} else {
+			fmt.Printf("✓ pushed %s to %s (upstream %s)\n", res.Branch, res.RemoteName, up)
+		}
+	}
 	return nil
+}
+
+// askForRemoteName prompts for a name for the new remote, offering one
+// derived from the forge host and skipping names already in use. Pressing
+// Enter takes that suggestion.
+func askForRemoteName(ask *prompt.Prompter, local *scaffold.LocalState, host, taken string) string {
+	suggest := scaffold.SuggestRemoteName(host, local.RemoteExists)
+	label := fmt.Sprintf("remote %q already exists in %s. Name for the new remote?", taken, local.Dir)
+	for {
+		answer := ask.Line(label, suggest)
+		if scaffold.ValidRemoteName(answer) && !local.RemoteExists(answer) {
+			return answer
+		}
+		// Without a terminal there is nobody to re-ask, so stop and use the
+		// suggestion rather than spinning.
+		if !ask.Interactive() {
+			return suggest
+		}
+		if !scaffold.ValidRemoteName(answer) {
+			fmt.Fprintf(os.Stderr, "fth: %q is not a valid remote name; try again\n", answer)
+		} else {
+			fmt.Fprintf(os.Stderr, "fth: remote %q already exists; try again\n", answer)
+		}
+	}
 }
 
 func pickRemoteURL(repo *forge.Repo, ssh bool) string {
@@ -392,6 +500,11 @@ type createPlan struct {
 	Tool, Host, Owner, Name, Description, Branch, Dir, Remote string
 	Private                                                   bool
 	Push, Scaffold, SSH                                       bool
+	// Attach reports that an existing repository is being given a new
+	// remote rather than scaffolded from scratch.
+	Attach bool
+	// Upstream reports whether the pushed branch will track the remote.
+	Upstream bool
 }
 
 func printPlan(p createPlan, c forge.Candidate) {
@@ -407,13 +520,24 @@ func printPlan(p createPlan, c forge.Candidate) {
 		fmt.Printf("  summary   %s\n", p.Description)
 	}
 	if p.Scaffold {
-		fmt.Printf("  local dir %s (branch %s)\n", p.Dir, p.Branch)
+		if p.Attach {
+			fmt.Printf("  local dir %s (existing repo, branch %s)\n", p.Dir, p.Branch)
+		} else {
+			fmt.Printf("  local dir %s (branch %s)\n", p.Dir, p.Branch)
+		}
 		fmt.Printf("  remote    %s\n", p.Remote)
 		push := "yes"
 		if !p.Push {
 			push = "no"
 		}
 		fmt.Printf("  push      %s\n", push)
+		if p.Push && p.Attach {
+			up := "no (origin stays upstream)"
+			if p.Upstream {
+				up = p.Remote
+			}
+			fmt.Printf("  upstream  %s\n", up)
+		}
 	}
 	fmt.Println()
 }

@@ -46,6 +46,9 @@ type Result struct {
 	Initialised  bool
 	RemoteAdded  bool
 	Committed    bool
+	// Attached reports that fth only added a remote to an existing
+	// repository instead of scaffolding a new one.
+	Attached bool
 }
 
 // git runs a git command inside dir and returns trimmed output.
@@ -76,6 +79,11 @@ func gitExists() bool {
 // Precheck validates that dir can be scaffolded, without modifying anything.
 // It is run before the remote repository is created so that a bad local
 // destination fails fast instead of leaving an orphaned remote behind.
+//
+// An existing git repository is deliberately allowed through: fth inspects it
+// with Inspect and then attaches a remote instead of scaffolding over it.
+// Nesting inside a repository rooted further up is refused, because adding a
+// remote there would modify that outer repository.
 func Precheck(dir string, force bool) error {
 	if !gitExists() {
 		return fmt.Errorf("git is not installed on PATH")
@@ -94,11 +102,18 @@ func Precheck(dir string, force bool) error {
 	if !st.IsDir() {
 		return fmt.Errorf("%s exists and is not a directory", abs)
 	}
-	if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
-		return fmt.Errorf("%s already contains a git repository", abs)
+	state, err := Inspect(abs)
+	if err != nil {
+		return err
+	}
+	if state.NestedInRepo {
+		return fmt.Errorf("%s is inside a git repository rooted elsewhere; run fth from the repository itself or use -dir", abs)
+	}
+	if state.IsRepo && state.HasCommits {
+		return nil // fth will attach a remote rather than scaffold
 	}
 	if !force {
-		if n, err := dirEntryCount(abs); err == nil && n > 0 {
+		if n, err := effectiveEntryCount(abs); err == nil && n > 0 {
 			return fmt.Errorf("%s is not empty (use -force to scaffold anyway)", abs)
 		}
 	}
@@ -121,7 +136,7 @@ func Create(opts Options, renderLicense func(spdx string, year int, holder strin
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, fmt.Errorf("create %s: %w", abs, err)
 	}
-	if n, err := dirEntryCount(abs); err == nil && n > 0 && !opts.Force {
+	if n, err := effectiveEntryCount(abs); err == nil && n > 0 && !opts.Force {
 		return nil, fmt.Errorf("%s is not empty (use -force to scaffold anyway)", abs)
 	}
 
@@ -171,14 +186,6 @@ func Create(opts Options, renderLicense func(spdx string, year int, holder strin
 	return res, nil
 }
 
-func setRemote(dir, name, url string) error {
-	if _, err := git(dir, "remote", "add", name, url); err == nil {
-		return nil
-	}
-	_, err := git(dir, "remote", "set-url", name, url)
-	return err
-}
-
 // writeStarterFiles creates README/.gitignore/LICENSE and returns the list of
 // relative paths written.
 func writeStarterFiles(dir string, opts Options,
@@ -222,24 +229,23 @@ func writeStarterFiles(dir string, opts Options,
 	return written, nil
 }
 
-// Push pushes the initial branch to the remote and sets upstream tracking.
-func Push(dir, remote, branch string) error {
+// Push pushes branch to remote.
+//
+// setUpstream decides whether git records branch as tracking remote. Callers
+// pass false when the repository already has an upstream they want left
+// alone, so pushing somewhere new cannot silently move it.
+func Push(dir, remote, branch string, setUpstream bool) error {
 	if remote == "" {
 		remote = "origin"
 	}
 	if branch == "" {
 		branch = "main"
 	}
-	if _, err := git(dir, "push", "--set-upstream", remote, branch); err != nil {
-		return err
+	args := []string{"push"}
+	if setUpstream {
+		args = append(args, "--set-upstream")
 	}
-	return nil
-}
-
-func dirEntryCount(dir string) (int, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return 0, err
-	}
-	return len(entries), nil
+	args = append(args, remote, branch)
+	_, err := git(dir, args...)
+	return err
 }

@@ -75,6 +75,7 @@ Flags may appear before or after the name, so `fth myproject -private` and
 | `-no-push` | `false` | Create the remote but don't push |
 | `-no-scaffold` | `false` | Create only the remote repository |
 | `-force` | `false` | Scaffold even if the local directory isn't empty |
+| `-yes` | `false` | Accept the default answer for every prompt |
 | `-holder` | your account | Copyright holder for the license |
 | `-year` | this year | Copyright year |
 | `-dry-run` | `false` | Print the plan and exit without changing anything |
@@ -97,9 +98,60 @@ fth -tool tea -owner myorg -license Apache-2.0 -no-scaffold myservice
 # Create the repo and local dir, but decide about pushing later
 fth -no-push myservice
 
+# Publish a git repo you already have (see below)
+cd ~/code/myservice && fth -dir . -tool fj myservice
+
 # See what would happen
 fth myservice -dry-run
 ```
+
+## Publishing an existing git repository
+
+If the target directory is already a git repository with at least one commit,
+`fth` stops scaffolding and switches to **attach** mode:
+
+```console
+$ cd ~/code/myservice
+$ fth -dir . myservice
+remote "origin" already exists in /home/you/code/myservice. Name for the new remote? [codeberg]:
+Set "codeberg" as upstream for branch main? [y/N]:
+
+Plan
+  backend   fj
+  instance  codeberg.org
+  repository you/myservice (public)
+  local dir /home/you/code/myservice (existing repo, branch main)
+  remote    codeberg
+  push      yes
+  upstream  no (origin stays upstream)
+
+✓ created you/myservice on codeberg.org (https://codeberg.org/you/myservice)
+✓ attached to existing repository /home/you/code/myservice (branch main)
+  · remote codeberg → https://codeberg.org/you/myservice.git
+✓ pushed main to codeberg (upstream origin/main)
+```
+
+In this mode:
+
+- **No files are written.** Your working tree, index and history are left
+  exactly as they are — no `README.md`, `.gitignore` or `LICENSE` is generated,
+  and no commit is created.
+- **An existing `origin` is never repointed.** The new remote is added under a
+  name you choose, and `origin` keeps its original URL.
+- **The suggested name comes from the instance host** — `codeberg.org` suggests
+  `codeberg`, `git.example.com` suggests `git`. If that's taken, it falls back to
+  `forge`, `upstream`, `mirror`, then `codeberg2`, `codeberg3`, and so on.
+- **Upstream defaults to unchanged.** Answering `N` pushes without
+  `--set-upstream`, so the branch keeps tracking `origin`. Answering `Y` makes
+  the new remote the branch's upstream.
+- **Adding a remote that already points elsewhere is refused**, never silently
+  rewritten. Re-running with the same URL is a no-op, so `fth` is safe to retry.
+- A **subdirectory of another repository is refused**, because adding a remote
+  there would silently modify the outer repository.
+
+Prompts go to stderr and read defaults from stdin, so `fth` still works in
+scripts — it just uses the defaults when there's no terminal. Pass `-yes` to
+skip the non-terminal notice entirely.
 
 ## Backend detection
 
@@ -128,13 +180,18 @@ Backends
 
 - **Nothing is created if the local directory is unusable.** The destination is
   validated *before* the remote repository is created, so a bad `-dir` can't
-  leave an orphan repo on your server.
+  leave an orphan repo on your server. An existing git repository *is* usable —
+  see [Publishing an existing git repository](#publishing-an-existing-git-repository).
 - **Templates are generated locally, not by the server.** `tea` can seed
   `.gitignore`/`LICENSE`/`README` server-side, but `fj` cannot, so both paths
   behave the same: the helper writes the files and pushes them.
 - **Backend commands run from a scratch directory.** Both CLIs infer a
   repository from `$PWD`; running them from a neutral directory stops an
   unrelated local checkout from leaking into the operation.
+- **Remotes are never repointed.** If the chosen remote name already exists with
+  a different URL, `fth` stops with an error instead of rewriting your remote.
+- **Pushes are never forced.** A non-fast-forward push fails with git's own
+  error rather than overwriting history on the server.
 - **`-license` writes the canonical SPDX text** from
   [`license-list-data`](https://github.com/spdx/license-list-data), with the
   year and copyright holder substituted.
@@ -158,5 +215,7 @@ Layout:
 - `mise.toml` — pinned toolchain (Go, golangci-lint) and task definitions
 - `internal/forge` — backend abstraction over `tea` and `fj`
   (`forge.go`, `tea.go`, `fj.go`, `detect.go`, `exec.go`)
-- `internal/scaffold` — local git repository creation
+- `internal/scaffold` — local git repository creation and remote attach
+  (`scaffold.go`, `repo.go`)
+- `internal/prompt` — interactive prompts with TTY detection and defaults
 - `internal/templates` — embedded SPDX licenses and `.gitignore` templates
