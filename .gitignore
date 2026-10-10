@@ -1,0 +1,6 @@
+# Built binary
+/fj-tea-helper
+
+# Go
+*.test
+*.out
