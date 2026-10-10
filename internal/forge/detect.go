@@ -75,62 +75,150 @@ func Detect(ctx context.Context, tools []Tool, opts ...Option) ([]Candidate, err
 	return out, nil
 }
 
-// Select chooses a tool, honouring an explicit --tool override and otherwise
-// taking the highest-priority candidate that actually authenticates.
-func Select(ctx context.Context, candidates []Candidate, want string) (Candidate, error) {
-	if want != "" && want != "auto" {
-		for _, c := range candidates {
-			if c.Name() == want {
-				if !c.Backend.Available(ctx) {
-					return c, fmt.Errorf("%s is not installed on PATH%s", want, hintSuffix(c.Backend.Tool()))
-				}
-				return c, nil
-			}
-		}
-		return Candidate{}, fmt.Errorf("unknown tool %q (want %s)", want, strings.Join(toolNames(candidates), ", "))
-	}
-	var usable []Candidate
-	for _, c := range candidates {
-		if c.Backend.Available(ctx) && c.Verified {
-			usable = append(usable, c)
-		}
-	}
-	if len(usable) == 0 {
-		return Candidate{}, fmt.Errorf("no authenticated %s login found; log in first (%s)",
-			strings.Join(toolNames(candidates), " or "),
-			strings.Join(loginHints(candidates), " / "))
-	}
-	return usable[0], nil
+// Target is a concrete destination: one backend CLI logged into one instance.
+// It is what fth actually acts on, so the user can be offered every pairing
+// rather than being asked to name a tool in advance.
+type Target struct {
+	Candidate
+	// Login is the instance to create on.
+	Login Login
+	// Account is the authenticated user on that instance.
+	Account string
 }
 
-// ResolveLogin picks the instance to use, honouring an explicit --host.
-func ResolveLogin(c Candidate, want string) (Login, error) {
-	if len(c.Logins) == 0 {
-		return Login{}, fmt.Errorf("%s has no configured logins", c.Name())
-	}
-	if want != "" {
-		for _, l := range c.Logins {
-			if strings.EqualFold(l.Name, want) || strings.EqualFold(l.URL, want) {
-				return l, nil
-			}
-			if h := hostOf(l); h != "" && strings.EqualFold(h, want) {
-				return l, nil
-			}
+// Tool returns the CLI that would be used.
+func (t Target) Tool() Tool { return t.Backend.Tool() }
+
+// ID is the "tool/host" spelling, which is unique across every target.
+func (t Target) ID() string { return string(t.Tool()) + "/" + t.Login.Name }
+
+// Targets flattens the candidates into the list of instances fth can create on.
+//
+// A login is only offered when its credential actually worked: `fj` in
+// particular lists hosts whose OAuth grant has been revoked, and offering one of
+// those would just produce a confusing failure later. Within each tool the
+// CLI's own default login comes first, so the first target overall is the one
+// that would be picked without asking.
+func Targets(candidates []Candidate) []Target {
+	var out []Target
+	for _, c := range candidates {
+		if !c.Verified {
+			continue
 		}
-		return Login{}, fmt.Errorf("%s has no login for %q (known: %s)", c.Name(), want, strings.Join(c.LoginNames(), ", "))
+		for _, l := range orderedLogins(c) {
+			if c.Users[l.Name] == "" {
+				continue
+			}
+			out = append(out, Target{Candidate: c, Login: l, Account: c.Users[l.Name]})
+		}
 	}
+	return out
+}
+
+// orderedLogins returns the logins with the CLI's default first.
+func orderedLogins(c Candidate) []Login {
+	out := make([]Login, 0, len(c.Logins))
 	for _, l := range c.Logins {
 		if l.Default {
-			return l, nil
+			out = append(out, l)
 		}
 	}
-	// Prefer the login whose stored credential actually worked.
 	for _, l := range c.Logins {
-		if c.Users[l.Name] != "" {
-			return l, nil
+		if !l.Default {
+			out = append(out, l)
 		}
 	}
-	return c.Logins[0], nil
+	return out
+}
+
+// Filter narrows targets to the ones matching an explicit tool and/or host. An
+// empty or "auto" tool matches everything. It returns an error rather than an
+// empty list when nothing matches, so the caller can explain how to fix it
+// rather than falling back to a different instance than the one asked for.
+func Filter(candidates []Candidate, targets []Target, tool, host string) ([]Target, error) {
+	if tool != "" && tool != "auto" {
+		var found *Candidate
+		for i, c := range candidates {
+			if c.Name() == tool {
+				found = &candidates[i]
+				break
+			}
+		}
+		if found == nil {
+			return nil, fmt.Errorf("unknown tool %q (want %s)", tool, strings.Join(toolNames(candidates), ", "))
+		}
+		if !found.Backend.Available(context.Background()) {
+			return nil, fmt.Errorf("%s is not installed on PATH%s", tool, hintSuffix(found.Backend.Tool()))
+		}
+		targets = byTool(targets, tool)
+		if len(targets) == 0 {
+			return nil, fmt.Errorf("%s has no working login; log in with: %s", tool, loginHint(found.Backend.Tool()))
+		}
+	}
+	if host != "" {
+		matched := byHost(targets, host)
+		if len(matched) == 0 {
+			return nil, fmt.Errorf("no login for %q (known: %s)", host, strings.Join(targetIDs(targets), ", "))
+		}
+		targets = matched
+	}
+	return targets, nil
+}
+
+func byTool(targets []Target, tool string) []Target {
+	var out []Target
+	for _, t := range targets {
+		if t.Name() == tool {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// byHost matches a login by its name, its URL or its bare host, since all three
+// are spellings a user might reasonably type into -host. The comparison is on
+// the normalised host so "gitea.com", "https://gitea.com" and a login URL all
+// land on the same instance.
+func byHost(targets []Target, host string) []Target {
+	want := bareHost(host)
+	var out []Target
+	for _, t := range targets {
+		if strings.EqualFold(t.Login.Name, host) ||
+			strings.EqualFold(t.Login.URL, host) ||
+			(want != "" && strings.EqualFold(hostOf(t.Login), want)) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// bareHost strips a scheme and any path from a URL-ish string.
+func bareHost(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	s = strings.TrimSuffix(s, "/")
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		s = s[:i]
+	}
+	return s
+}
+
+// NoTargetsError reports that nothing is usable at all, naming every tool that
+// was checked so the user knows where to log in.
+func NoTargetsError(candidates []Candidate) error {
+	return fmt.Errorf("no authenticated login found; log in first (%s)",
+		strings.Join(loginHints(candidates), " / "))
+}
+
+// targetIDs lists the "tool/host" spelling of every target.
+func targetIDs(targets []Target) []string {
+	out := make([]string, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, t.ID())
+	}
+	return out
 }
 
 // LoginNames lists the configured login names.

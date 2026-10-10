@@ -2,8 +2,14 @@ package main
 
 import (
 	"flag"
+	"io"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/himmel/fj-tea-helper/internal/forge"
+	"github.com/himmel/fj-tea-helper/internal/prompt"
 )
 
 func newTestFlags() *flag.FlagSet {
@@ -66,5 +72,45 @@ func TestReorderArgsDoubleDashKeepsDashyName(t *testing.T) {
 	}
 	if fs.Arg(0) != "-weird-name" {
 		t.Errorf("positional = %q, want %q", fs.Arg(0), "-weird-name")
+	}
+}
+
+// fakeTarget builds a Target with a real backend, since a zero-valued
+// Candidate has no Backend and Target.ID asks it for the tool name.
+func fakeTarget(tool forge.Tool, host, account string) forge.Target {
+	b, err := forge.Discover(tool)
+	if err != nil {
+		panic(err)
+	}
+	return forge.Target{
+		Candidate: forge.Candidate{Backend: b, Users: map[string]string{host: account}},
+		Login:     forge.Login{Name: host, URL: "https://" + host},
+		Account:   account,
+	}
+}
+
+// A target list with one entry needs no question, and without a terminal there
+// is nobody to answer one, so both take the default.
+func TestPickTargetTakesTheOnlyOption(t *testing.T) {
+	only := fakeTarget(forge.ToolTea, "gitea.com", "me")
+	one := []forge.Target{only}
+	if got := pickTarget(prompt.NonInteractive(io.Discard), one); got.ID() != only.ID() {
+		t.Errorf("single target = %q, want %q", got.ID(), only.ID())
+	}
+	if got := pickTarget(prompt.New(strings.NewReader(""), os.Stderr), one); got.ID() != only.ID() {
+		t.Errorf("single target without a terminal = %q, want %q", got.ID(), only.ID())
+	}
+}
+
+// With no terminal and several instances to choose from, fth must still pick
+// one rather than refusing to run.
+func TestPickTargetFallsBackToTheFirst(t *testing.T) {
+	list := []forge.Target{
+		fakeTarget(forge.ToolFj, "codeberg.org", "a"),
+		fakeTarget(forge.ToolTea, "gitea.com", "b"),
+	}
+	got := pickTarget(prompt.NonInteractive(io.Discard), list)
+	if got.ID() != "fj/codeberg.org" {
+		t.Errorf("fallback = %q, want fj/codeberg.org", got.ID())
 	}
 }

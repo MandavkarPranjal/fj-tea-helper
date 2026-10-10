@@ -225,27 +225,31 @@ func run(argv []string) error {
 		return err
 	}
 
-	selected, err := forge.Select(ctx, candidates, o.tool)
+	// Ask which instance to create on before anything else, since it decides
+	// the owner, the remote URL and where the repository ends up. Everything
+	// is optional: -tool and -host narrow the list, -yes or a pipe takes the
+	// default, and an explicit -tool -host pair skips the question entirely.
+	ask := prompt.New(os.Stdin, os.Stderr)
+	if o.yes {
+		ask = prompt.NonInteractive(os.Stderr)
+	}
+
+	targets, err := forge.Filter(candidates, forge.Targets(candidates), o.tool, o.host)
 	if err != nil {
 		return reportNoBackend(candidates, err)
 	}
-	if !selected.Verified {
-		for _, n := range selected.Notes {
-			fmt.Fprintln(os.Stderr, ui.Warnf("%s", n))
-		}
+	if len(targets) == 0 {
+		return reportNoBackend(candidates, forge.NoTargetsError(candidates))
 	}
+	target := pickTarget(ask, targets)
 
-	login, err := forge.ResolveLogin(selected, o.host)
-	if err != nil {
-		return err
-	}
-
+	login := target.Login
 	owner := o.owner
 	if owner == "" {
-		owner = selected.User(login.Name)
+		owner = target.Account
 	}
 	if owner == "" {
-		return fmt.Errorf("could not determine the owner; pass -owner (logins: %s)", strings.Join(selected.LoginNames(), ", "))
+		return fmt.Errorf("could not determine the owner; pass -owner (logins: %s)", strings.Join(target.LoginNames(), ", "))
 	}
 
 	private := strings.EqualFold(o.visibility, "private")
@@ -271,14 +275,6 @@ func run(argv []string) error {
 	dir := o.dir
 	if dir == "" {
 		dir = name
-	}
-
-	// Inspect the destination before planning anything. An existing
-	// repository is attached to rather than scaffolded over, and asking for a
-	// remote name now keeps every prompt ahead of the first side effect.
-	ask := prompt.New(os.Stdin, os.Stderr)
-	if o.yes {
-		ask = prompt.NonInteractive(os.Stderr)
 	}
 
 	// SSH is the preferred remote, but the user gets to choose, so ask before
@@ -329,7 +325,7 @@ func run(argv []string) error {
 
 	// Build the plan before touching anything, so -dry-run is meaningful.
 	plan := createPlan{
-		Tool:        selected.Name(),
+		Tool:        string(target.Tool()),
 		Host:        login.Name,
 		Owner:       owner,
 		Name:        name,
@@ -345,7 +341,7 @@ func run(argv []string) error {
 		Attach:      attach,
 		Upstream:    setUpstream,
 	}
-	printPlan(plan, selected)
+	printPlan(plan)
 
 	if o.dryRun {
 		fmt.Println(ui.Dim("(dry run: nothing was created)"))
@@ -364,7 +360,7 @@ func run(argv []string) error {
 	req := forge.CreateRequest{
 		Login:         login.Name,
 		Owner:         owner,
-		Account:       selected.User(login.Name),
+		Account:       target.Account,
 		Name:          name,
 		Description:   o.description,
 		Private:       private,
@@ -375,16 +371,16 @@ func run(argv []string) error {
 	if !o.noScaffold {
 		// Let the backend seed template files only when the user asked for
 		// tea's richer template support; otherwise we write them locally.
-		if selected.Name() == string(forge.ToolTea) && (o.lang != "" || licenseID != "") && !o.readme {
+		if target.Tool() == forge.ToolTea && (o.lang != "" || licenseID != "") && !o.readme {
 			req.Init = true
 			req.Gitignore = o.lang
 			req.License = licenseID
 		}
 	}
 
-	logf(o.verbose, "creating %s/%s on %s via %s...\n", owner, name, login.Name, selected.Name())
+	logf(o.verbose, "creating %s/%s on %s via %s...\n", owner, name, login.Name, target.Tool())
 	spin.Start("creating " + owner + "/" + name + " on " + login.Name)
-	repo, err := selected.Backend.CreateRepo(ctx, req)
+	repo, err := target.Backend.CreateRepo(ctx, req)
 	spin.Stop()
 	if err != nil {
 		return fmt.Errorf("create remote repository: %w", err)
@@ -472,6 +468,36 @@ func run(argv []string) error {
 		}
 	}
 	return nil
+}
+
+// pickTarget shows every instance fth can create on and returns the chosen one.
+//
+// Both axes matter: tea and fj are routinely logged into several hosts at once,
+// so "which backend" is not really the question — "which account on which host"
+// is. Offering the pairing means the user never has to know that `-tool tea
+// -host git.acme.com` is two flags for one decision.
+//
+// The list is already narrowed by -tool/-host before it gets here, and the
+// first entry is the one fth would have picked on its own.
+func pickTarget(ask *prompt.Prompter, targets []forge.Target) forge.Target {
+	if len(targets) == 1 || !ask.Interactive() {
+		return targets[0]
+	}
+	opts := make([]prompt.Option, 0, len(targets))
+	for _, t := range targets {
+		opts = append(opts, prompt.Option{
+			Label:  fmt.Sprintf("%s  %s", ui.Pad(string(t.Tool()), 4), t.Login.Name),
+			Value:  t.ID(),
+			Detail: t.Account,
+		})
+	}
+	got := ask.Select("Create the repository on", opts, targets[0].ID())
+	for _, t := range targets {
+		if t.ID() == got {
+			return t
+		}
+	}
+	return targets[0]
 }
 
 // askForRemoteName prompts for a name for the new remote, offering one
@@ -596,7 +622,7 @@ type createPlan struct {
 	Upstream bool
 }
 
-func printPlan(p createPlan, c forge.Candidate) {
+func printPlan(p createPlan) {
 	vis := "public"
 	if p.Private {
 		vis = "private"
@@ -676,9 +702,10 @@ Usage:
   fth [flags] <owner>/<name>
   fth -list
 
-It detects whether 'fj' (Forgejo), 'tea' (Gitea) or 'cafe' (GitCafe) is
-authenticated, creates the remote repository, scaffolds a local git repo with
-README/.gitignore/LICENSE, adds the remote and pushes the initial commit.
+It detects every 'fj' (Forgejo), 'tea' (Gitea) and 'cafe' (GitCafe) login you
+have, asks which instance to create on, creates the remote repository,
+scaffolds a local git repo with README/.gitignore/LICENSE, adds the remote and
+pushes the initial commit.
 
 Flags:
 `, version)

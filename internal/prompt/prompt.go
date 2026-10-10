@@ -299,6 +299,18 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyDown, tea.KeyTab:
 		m.cursor = (m.cursor + 1) % len(m.options)
 		return m, nil
+	case tea.KeyRunes:
+		// vim keys, but only when they are not somebody's answer. If an
+		// option is called "json", pressing "j" has to mean that option
+		// rather than "move down", otherwise it cannot be picked at all.
+		if len(m.options) > 0 && !m.runeIsOption('k') {
+			m.cursor = (m.cursor - 1 + len(m.options)) % len(m.options)
+			return m, nil
+		}
+		if len(m.options) > 0 && !m.runeIsOption('j') {
+			m.cursor = (m.cursor + 1) % len(m.options)
+			return m, nil
+		}
 	case tea.KeyEnter, tea.KeySpace:
 		m.result = m.options[m.cursor].Value
 		m.done = true
@@ -321,6 +333,17 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// runeIsOption reports whether an option's value starts with r, which makes
+// that key ambiguous between "move the cursor" and "choose this option".
+func (m selectModel) runeIsOption(r rune) bool {
+	for _, o := range m.options {
+		if o.Value != "" && strings.EqualFold(string([]rune(o.Value)[0]), string(r)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m selectModel) View() string {

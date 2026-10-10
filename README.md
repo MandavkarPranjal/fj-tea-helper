@@ -57,9 +57,9 @@ Flags may appear before or after the name, so `fth myproject -private` and
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `-tool` | `auto` | Backend CLI: `auto`, `tea`, `fj`, or `cafe` |
+| `-tool` | `auto` | Backend CLI: `auto`, `tea`, `fj`, or `cafe`; narrows the instance picker |
 | `-cafe-bin` | `cafe` on PATH | Explicit path to the `cafe` binary |
-| `-host` | detected | Instance host, e.g. `gitea.com` |
+| `-host` | detected | Instance host, e.g. `gitea.com`; narrows the instance picker |
 | `-owner` | your account | Repository owner or organisation |
 | `-description` | – | Short repository description |
 | `-visibility` | `public` | `public` or `private` |
@@ -250,16 +250,53 @@ Plan
 
 ## Backend detection
 
-`-tool auto` probes all three CLIs in order and takes the first that
-authenticates: `fj`, then `tea`, then `cafe`.
+fth probes all three CLIs and then asks **which instance to create on**:
+
+```console
+$ fth myproject
+Create the repository on
+  > fj    codeberg.org  MandavkarPranjal
+    tea   gitea.com     MandavkarPranjal
+    cafe  git.cafe      mandavkarpranjal
+  (up/down to move, enter to choose)
+Create the repository on: fj    codeberg.org
+```
+
+Each row is a real pairing of a CLI with one of its logins, because that is the
+actual decision: `tea` and `fj` are both routinely signed into several hosts at
+once, so "which backend" is the wrong question to ask on its own. The account
+you are authenticated as is shown beside each host. ↑/↓ to move, the first
+letter of a row to jump straight to it, Enter to choose.
+
+How the list is built:
 
 1. Run `fj auth list` / `tea logins list -o json` / `cafe auth status --json` to
    find configured logins.
-2. Confirm a login actually works — for `fj` this means `fj whoami`, because
+2. Confirm each login actually works — for `fj` this means `fj whoami`, because
    `fj auth list` happily reports instances whose stored OAuth grant has been
-   revoked.
-3. Prefer whichever authenticates, in that order. Name one explicitly with
-   `-tool` to skip the probe entirely.
+   revoked. A login that fails is left out of the list rather than offered and
+   then failing later.
+3. Order the results by tool (`fj`, then `tea`, then `cafe`), and within each
+   tool put the CLI's own default login first. That first row is the one Enter
+   accepts, so pressing Enter twice always does something sensible.
+
+`-tool` and `-host` narrow the list before it is shown, and are what you want in
+a script:
+
+```console
+$ fth -tool tea myproject        # only tea's logins, or the default if there is just one
+$ fth -host codeberg.org myproject
+```
+
+A flag that matches nothing is an error rather than a silent fallback to a
+different instance:
+
+```console
+error: no login for "nope.example" (known: fj/codeberg.org, tea/gitea.com, cafe/git.cafe)
+```
+
+With `-yes`, or when stdin is not a terminal, fth takes the first entry and says
+so, so nothing hangs in CI.
 
 Use `-list` to see exactly what was detected:
 

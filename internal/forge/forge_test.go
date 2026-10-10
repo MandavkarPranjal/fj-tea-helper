@@ -1,8 +1,8 @@
 package forge
 
 import (
-	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -126,35 +126,109 @@ func TestIsAuthError(t *testing.T) {
 	}
 }
 
-func TestSelectHonoursOverride(t *testing.T) {
+func fakeCandidates() []Candidate {
 	fj, _ := Discover(ToolFj)
 	tea, _ := Discover(ToolTea)
-	cands := []Candidate{
-		{Backend: fj, Verified: true, Users: map[string]string{"codeberg.org": "a"}},
-		{Backend: tea, Verified: true, Users: map[string]string{"gitea.com": "b"}},
-	}
-	// No binary on PATH in tests, so only check the name matching logic.
-	if _, err := Select(context.Background(), cands, "nope"); err == nil {
-		t.Error("expected error for unknown tool")
+	return []Candidate{
+		{
+			Backend:  fj,
+			Verified: true,
+			Logins: []Login{
+				{Name: "git.acme.com"},
+				{Name: "codeberg.org", Default: true},
+			},
+			Users: map[string]string{"git.acme.com": "alice", "codeberg.org": "a"},
+		},
+		{
+			Backend:  tea,
+			Verified: true,
+			Logins:   []Login{{Name: "gitea.com"}},
+			Users:    map[string]string{"gitea.com": "b"},
+		},
 	}
 }
 
-func TestResolveLogin(t *testing.T) {
-	c := Candidate{
-		Logins:  []Login{{Name: "a.com"}, {Name: "b.com", Default: true}},
-		Users:   map[string]string{"a.com": "ua", "b.com": "ub"},
-		Backend: fjBackend{},
+// Every tool/login pair fth could act on, one flat list to choose from.
+func TestTargetsFlattensToolsAndLogins(t *testing.T) {
+	got := Targets(fakeCandidates())
+	want := []string{"fj/codeberg.org", "fj/git.acme.com", "tea/gitea.com"}
+	if len(got) != len(want) {
+		t.Fatalf("Targets = %d entries, want %d (%v)", len(got), len(want), targetIDs(got))
 	}
-	l, err := ResolveLogin(c, "")
-	if err != nil || l.Name != "b.com" {
-		t.Errorf("expected default login b.com, got %v (%v)", l.Name, err)
+	for i, id := range want {
+		if got[i].ID() != id {
+			t.Errorf("Targets[%d] = %q, want %q", i, got[i].ID(), id)
+		}
 	}
-	l, err = ResolveLogin(c, "a.com")
-	if err != nil || l.Name != "a.com" {
-		t.Errorf("expected a.com, got %v (%v)", l.Name, err)
+	// The default login leads its tool, so the first entry is the one fth
+	// would have picked without asking.
+	if got[0].Account != "a" {
+		t.Errorf("first target account = %q, want a", got[0].Account)
 	}
-	if _, err := ResolveLogin(c, "z.com"); err == nil {
-		t.Error("expected error for unknown host")
+}
+
+// A login whose credential is broken must not be offered: fj lists hosts whose
+// OAuth grant has been revoked, and picking one would fail confusingly later.
+func TestTargetsSkipsUnverifiedLogins(t *testing.T) {
+	cands := fakeCandidates()
+	cands[0].Users = map[string]string{"codeberg.org": "a"} // git.acme.com never verified
+	got := Targets(cands)
+	if len(got) != 2 {
+		t.Fatalf("Targets = %v, want fj/codeberg.org and tea/gitea.com only", targetIDs(got))
+	}
+	for _, tg := range got {
+		if tg.Login.Name == "git.acme.com" {
+			t.Error("unverified login should not be offered")
+		}
+	}
+}
+
+func TestFilterNarrowsByToolAndHost(t *testing.T) {
+	cands := fakeCandidates()
+	all := Targets(cands)
+
+	got, err := Filter(cands, all, "", "")
+	if err != nil || len(got) != 3 {
+		t.Errorf("no filters = %v (%v), want all three", targetIDs(got), err)
+	}
+	got, err = Filter(cands, all, "fj", "")
+	if err != nil || len(got) != 2 {
+		t.Errorf("-tool fj = %v (%v), want the two fj logins", targetIDs(got), err)
+	}
+	got, err = Filter(cands, all, "fj", "git.acme.com")
+	if err != nil || len(got) != 1 || got[0].ID() != "fj/git.acme.com" {
+		t.Errorf("-tool fj -host git.acme.com = %v (%v)", targetIDs(got), err)
+	}
+	// "auto" is the default and must not filter anything out.
+	got, err = Filter(cands, all, "auto", "")
+	if err != nil || len(got) != 3 {
+		t.Errorf("-tool auto = %v (%v), want all three", targetIDs(got), err)
+	}
+}
+
+// -host may be spelled as the login name, the full URL, or a bare host.
+func TestFilterMatchesHostSpellings(t *testing.T) {
+	cands := fakeCandidates()
+	all := Targets(cands)
+	for _, want := range []string{"gitea.com", "https://gitea.com"} {
+		got, err := Filter(cands, all, "tea", want)
+		if err != nil || len(got) != 1 || got[0].Login.Name != "gitea.com" {
+			t.Errorf("-host %q = %v (%v)", want, targetIDs(got), err)
+		}
+	}
+}
+
+// A flag that matches nothing is an error, never a silent fallback to some
+// other instance than the one the user asked for.
+func TestFilterReportsUnmatchedFlags(t *testing.T) {
+	cands := fakeCandidates()
+	all := Targets(cands)
+	if _, err := Filter(cands, all, "gitlab", ""); err == nil {
+		t.Error("expected an error for an unknown tool")
+	}
+	_, err := Filter(cands, all, "", "nope.example")
+	if err == nil || !strings.Contains(err.Error(), "known:") {
+		t.Errorf("unknown host error = %v, want one listing the known targets", err)
 	}
 }
 
