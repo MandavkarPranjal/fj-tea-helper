@@ -12,6 +12,7 @@
 package prompt
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,6 +22,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// ErrAborted is returned by every question when the user presses Ctrl+C. It
+// cancels the whole run rather than answering the question, so fth exits
+// without creating anything. Esc is the softer option: it keeps the default and
+// carries on, which is for "never mind, just pick".
+var ErrAborted = errors.New("cancelled")
 
 // styles carries the prompt's colour scheme. It is built from a renderer bound
 // to the prompt's own output stream rather than lipgloss's package-level
@@ -136,50 +143,66 @@ func runPrompt[M tea.Model](p *Prompter, m M) (final M, ok bool) {
 
 // Line asks for a free-form value, returning def when the user presses Enter
 // without changing anything or when there is no terminal to ask on.
-func (p *Prompter) Line(label, def string) string {
+//
+// It returns ErrAborted if the user pressed Ctrl+C.
+func (p *Prompter) Line(label, def string) (string, error) {
 	if !p.interactive {
 		p.note(label, def)
-		return def
+		return def, nil
 	}
 	m, ok := runPrompt(p, newLineModel(label, def, p.s))
 	if !ok {
 		p.note(label, def)
-		return def
+		return def, nil
+	}
+	if m.aborted {
+		return "", ErrAborted
 	}
 	p.writef("%s %s\n", p.s.hint.Render(label+":"), p.s.answer.Render(m.result))
-	return m.result
+	return m.result, nil
 }
 
 // YesNo asks a yes/no question, returning def when the user presses Enter
 // without changing anything or when there is no terminal to ask on.
-func (p *Prompter) YesNo(label string, def bool) bool {
+//
+// It returns ErrAborted if the user pressed Ctrl+C.
+func (p *Prompter) YesNo(label string, def bool) (bool, error) {
 	choice := "no"
 	if def {
 		choice = "yes"
 	}
-	return p.Select(label, []Option{
+	got, err := p.Select(label, []Option{
 		{Label: "yes", Value: "yes"},
 		{Label: "no", Value: "no"},
-	}, choice) == "yes"
+	}, choice)
+	if err != nil {
+		return def, err
+	}
+	return got == "yes", nil
 }
 
 // Select asks the user to pick one of options, returning the chosen value. The
 // option matching def is highlighted on entry, and Enter accepts it.
-func (p *Prompter) Select(label string, options []Option, def string) string {
+//
+// It returns ErrAborted if the user pressed Ctrl+C.
+func (p *Prompter) Select(label string, options []Option, def string) (string, error) {
 	if len(options) == 0 {
-		return def
+		return def, nil
 	}
 	if !p.interactive {
 		p.note(label, def)
-		return def
+		return def, nil
 	}
 	m, ok := runPrompt(p, newSelectModel(label, options, def, p.s))
 	if !ok {
 		p.note(label, def)
-		return def
+		return def, nil
+	}
+	if m.aborted {
+		return "", ErrAborted
 	}
 	p.writef("%s %s\n", p.s.hint.Render(label+":"), p.s.answer.Render(m.resultLabel()))
-	return m.result
+	return m.result, nil
 }
 
 // note explains a default that was applied without asking, so a script or CI
@@ -194,12 +217,13 @@ func (p *Prompter) note(label, value string) {
 // lineModel is the Bubble Tea model behind Line: a single text input seeded
 // with the suggested value so Enter accepts it and typing replaces it.
 type lineModel struct {
-	label  string
-	def    string
-	input  textinput.Model
-	done   bool
-	result string
-	s      styles
+	label   string
+	def     string
+	input   textinput.Model
+	done    bool
+	aborted bool
+	result  string
+	s       styles
 	// typed records whether the user has entered anything yet, so the first
 	// keystroke can replace the seeded default instead of appending to it.
 	typed bool
@@ -230,9 +254,14 @@ func (m lineModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.done, m.result = true, v
 			return m, tea.Quit
-		case tea.KeyCtrlC, tea.KeyEsc:
-			// Treat cancellation as "keep the default" rather than aborting
-			// the run, so a stray keystroke cannot leave a half-created repo.
+		case tea.KeyCtrlC:
+			// Ctrl+C means "stop fth", not "answer this question", so the run
+			// aborts with nothing created.
+			m.done, m.aborted = true, true
+			return m, tea.Quit
+		case tea.KeyEsc:
+			// Esc is the softer "never mind": keep the default and carry on,
+			// so a stray keystroke cannot leave a half-created repo.
 			m.done, m.result = true, m.def
 			return m, tea.Quit
 		case tea.KeyRunes:
@@ -270,6 +299,7 @@ type selectModel struct {
 	options []Option
 	cursor  int
 	done    bool
+	aborted bool
 	result  string
 	s       styles
 }
@@ -303,19 +333,32 @@ func (m selectModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// vim keys, but only when they are not somebody's answer. If an
 		// option is called "json", pressing "j" has to mean that option
 		// rather than "move down", otherwise it cannot be picked at all.
-		if len(m.options) > 0 && !m.runeIsOption('k') {
-			m.cursor = (m.cursor - 1 + len(m.options)) % len(m.options)
-			return m, nil
+		if len(key.Runes) != 1 || len(m.options) == 0 {
+			break
 		}
-		if len(m.options) > 0 && !m.runeIsOption('j') {
-			m.cursor = (m.cursor + 1) % len(m.options)
-			return m, nil
+		switch key.Runes[0] {
+		case 'k':
+			if !m.runeIsOption('k') {
+				m.cursor = (m.cursor - 1 + len(m.options)) % len(m.options)
+				return m, nil
+			}
+		case 'j':
+			if !m.runeIsOption('j') {
+				m.cursor = (m.cursor + 1) % len(m.options)
+				return m, nil
+			}
 		}
 	case tea.KeyEnter, tea.KeySpace:
 		m.result = m.options[m.cursor].Value
 		m.done = true
 		return m, tea.Quit
-	case tea.KeyCtrlC, tea.KeyEsc:
+	case tea.KeyCtrlC:
+		// Ctrl+C cancels the whole run; nothing is created.
+		m.done, m.aborted = true, true
+		return m, tea.Quit
+	case tea.KeyEsc:
+		// Esc keeps the highlighted option, which is the same as pressing
+		// Enter, and carries on.
 		m.result = m.options[m.cursor].Value
 		m.done = true
 		return m, tea.Quit
@@ -376,7 +419,7 @@ func (m selectModel) View() string {
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString(m.s.hint.Render("  (up/down to move, enter to choose)"))
+	b.WriteString(m.s.hint.Render("  (up/down or j/k to move, enter to choose)"))
 	return b.String()
 }
 

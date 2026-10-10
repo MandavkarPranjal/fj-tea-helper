@@ -168,12 +168,13 @@ $ fth myservice
 Remote URL
   > ssh    git@codeberg.org:you/myservice.git
     https  https://codeberg.org/you/myservice.git
-  (up/down to move, enter to choose)
+  (up/down or j/k to move, enter to choose)
 Remote URL: ssh
 ```
 
-Use `↑`/`↓` to move, or press the first letter of a choice (`s` for ssh, `h`
-for https). Pass `-url ssh` or `-url https` to skip the question entirely.
+Use `↑`/`↓` or `j`/`k` to move, or press the first letter of a choice (`s` for
+ssh, `h` for https). Pass `-url ssh` or `-url https` to skip the question
+entirely.
 
 ## Prompts
 
@@ -187,8 +188,13 @@ restored cleanly even if the question is cancelled.
   it; start typing to replace it entirely.
 - **Choice questions** highlight the current answer with `>`, accept the first
   letter of any choice as a shortcut, and default to the highlighted one.
-- `Esc` or `Ctrl-C` at a prompt keeps the default rather than aborting, so a
-  stray keystroke can't leave a half-created repository behind.
+- `Esc` at a prompt means "never mind": it takes the highlighted (default)
+  answer and carries on, so a stray keystroke can't leave a half-created
+  repository behind.
+- `Ctrl-C` cancels the whole run. fth exits with status 130 and prints
+  `cancelled; nothing was created`. Because every question is asked before
+  anything is created, stopping at a prompt always means nothing was made —
+  the remote is never half-built.
 
 Questions are styled too: the question is bold, the highlighted answer is
 accent-coloured along with its cursor, option details are faint, and the
@@ -258,15 +264,15 @@ Create the repository on
   > fj    codeberg.org  MandavkarPranjal
     tea   gitea.com     MandavkarPranjal
     cafe  git.cafe      mandavkarpranjal
-  (up/down to move, enter to choose)
+  (up/down or j/k to move, enter to choose)
 Create the repository on: fj    codeberg.org
 ```
 
 Each row is a real pairing of a CLI with one of its logins, because that is the
 actual decision: `tea` and `fj` are both routinely signed into several hosts at
 once, so "which backend" is the wrong question to ask on its own. The account
-you are authenticated as is shown beside each host. ↑/↓ to move, the first
-letter of a row to jump straight to it, Enter to choose.
+you are authenticated as is shown beside each host. `↑`/`↓` or `j`/`k` to move,
+the first letter of a row to jump straight to it, Enter to choose.
 
 How the list is built:
 
@@ -389,7 +395,7 @@ Layout:
   (`forge.go`, `tea.go`, `fj.go`, `cafe.go`, `detect.go`, `exec.go`)
 - `internal/scaffold` — local git repository creation and remote attach
   (`scaffold.go`, `repo.go`)
-- `internal/prompt` — Bubble Tea prompts: text input and arrow-key selection
+- `internal/prompt` — Bubble Tea prompts: text input and single-choice selection
 - `internal/ui` — colour and alignment, with automatic plain-text fallback
 - `internal/progress` — indeterminate spinner for the network-bound steps
 - `internal/templates` — embedded SPDX licenses and `.gitignore` templates

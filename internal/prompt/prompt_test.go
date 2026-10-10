@@ -44,7 +44,11 @@ func TestLineFallsBackToDefaultWithoutTerminal(t *testing.T) {
 	if interactive {
 		t.Fatal("a strings.Reader must not be treated as a terminal")
 	}
-	if got := p.Line("Remote name", "codeberg"); got != "codeberg" {
+	got, err := p.Line("Remote name", "codeberg")
+	if err != nil {
+		t.Fatalf("Line: %v", err)
+	}
+	if got != "codeberg" {
 		t.Errorf("Line = %q, want codeberg", got)
 	}
 	if !strings.Contains(out.String(), "no terminal") {
@@ -54,20 +58,31 @@ func TestLineFallsBackToDefaultWithoutTerminal(t *testing.T) {
 
 func TestYesNoFallsBackToDefaultWithoutTerminal(t *testing.T) {
 	p, _, _ := newTest("")
-	if !p.YesNo("Set as upstream?", true) {
+	yes, err := p.YesNo("Set as upstream?", true)
+	if err != nil {
+		t.Fatalf("YesNo: %v", err)
+	}
+	if !yes {
 		t.Error("expected the default (true) to be used")
 	}
-	if p.YesNo("Set as upstream?", false) {
+	no, err := p.YesNo("Set as upstream?", false)
+	if err != nil {
+		t.Fatalf("YesNo: %v", err)
+	}
+	if no {
 		t.Error("expected the default (false) to be used")
 	}
 }
 
 func TestSelectFallsBackToDefaultWithoutTerminal(t *testing.T) {
 	p, out, _ := newTest("")
-	got := p.Select("Remote URL", []Option{
+	got, err := p.Select("Remote URL", []Option{
 		{Label: "ssh", Value: "ssh"},
 		{Label: "https", Value: "https"},
 	}, "https")
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
 	if got != "https" {
 		t.Errorf("Select = %q, want https", got)
 	}
@@ -82,17 +97,25 @@ func TestNonInteractiveNeverAsks(t *testing.T) {
 	if p.Interactive() {
 		t.Error("NonInteractive must report itself as non-interactive")
 	}
-	if got := p.Line("Remote name", "forge"); got != "forge" {
+	got, err := p.Line("Remote name", "forge")
+	if err != nil {
+		t.Fatalf("Line: %v", err)
+	}
+	if got != "forge" {
 		t.Errorf("Line = %q", got)
 	}
-	if p.YesNo("Set as upstream?", true) != true {
+	yes, err := p.YesNo("Set as upstream?", true)
+	if err != nil {
+		t.Fatalf("YesNo: %v", err)
+	}
+	if !yes {
 		t.Error("YesNo should honour the default")
 	}
 }
 
 func TestNoteMentionsTheLabel(t *testing.T) {
 	p, out, _ := newTest("")
-	p.Line("Remote name for the new remote", "gitea")
+	_, _ = p.Line("Remote name for the new remote", "gitea")
 	if !strings.Contains(out.String(), "Remote name for the new remote") {
 		t.Errorf("output should name the question, got %q", out.String())
 	}
@@ -168,6 +191,56 @@ func TestSelectLetterJumpsToOption(t *testing.T) {
 	}
 }
 
+func TestSelectJKMovesTheCursor(t *testing.T) {
+	m := newSelectModel("Create the repository on", []Option{
+		{Label: "fj    codeberg.org", Value: "fj/codeberg.org"},
+		{Label: "tea   gitea.com", Value: "tea/gitea.com"},
+		{Label: "cafe  git.cafe", Value: "cafe/git.cafe"},
+	}, "fj/codeberg.org", plainStyles())
+
+	final := press(t, m, keyRune('j'))
+	if final.cursor != 1 {
+		t.Errorf("j should move down to tea, cursor = %d", final.cursor)
+	}
+	if final.done {
+		t.Error("j should move the cursor, not choose an option")
+	}
+
+	final = press(t, final, keyRune('j'))
+	if final.cursor != 2 {
+		t.Errorf("j should move down to cafe, cursor = %d", final.cursor)
+	}
+
+	final = press(t, final, keyRune('k'))
+	if final.cursor != 1 {
+		t.Errorf("k should move back up to tea, cursor = %d", final.cursor)
+	}
+
+	// Wrapping, same as the arrow keys.
+	final = press(t, final, keyRune('k'))
+	if final.cursor != 0 {
+		t.Errorf("k should wrap to fj, cursor = %d", final.cursor)
+	}
+	final = press(t, final, keyRune('j'), enter())
+	if final.result != "tea/gitea.com" {
+		t.Errorf("j then enter should choose tea, got %q", final.result)
+	}
+}
+
+func TestSelectJKeepsChoosingWhenAnOptionStartsWithIt(t *testing.T) {
+	// "json" starts with j, so j has to mean that option rather than
+	// "move down", otherwise the option cannot be picked at all.
+	m := newSelectModel("Format", []Option{
+		{Label: "pretty", Value: "pretty"},
+		{Label: "json", Value: "json"},
+	}, "pretty", plainStyles())
+
+	final := press(t, m, keyRune('j'))
+	if !final.done || final.result != "json" {
+		t.Errorf("j should choose json, got done=%v result=%q", final.done, final.result)
+	}
+}
+
 func TestSelectEscKeepsTheDefault(t *testing.T) {
 	m := newSelectModel("Remote URL", []Option{
 		{Label: "ssh", Value: "ssh"},
@@ -176,6 +249,50 @@ func TestSelectEscKeepsTheDefault(t *testing.T) {
 	final := press(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if final.result != "ssh" {
 		t.Errorf("Esc should keep the highlighted option, got %q", final.result)
+	}
+	if final.aborted {
+		t.Error("Esc must not abort the run; it means never mind, keep the default")
+	}
+}
+
+// Ctrl+C cancels the whole run. Settling on a value instead would silently
+// create a repository the user just told fth to stop.
+func TestSelectCtrlCAborts(t *testing.T) {
+	m := newSelectModel("Create the repository on", []Option{
+		{Label: "fj    codeberg.org", Value: "fj/codeberg.org"},
+		{Label: "tea   gitea.com", Value: "tea/gitea.com"},
+	}, "fj/codeberg.org", plainStyles())
+	final := press(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !final.done {
+		t.Error("Ctrl+C should end the prompt")
+	}
+	if !final.aborted {
+		t.Error("Ctrl+C should mark the prompt as aborted")
+	}
+	if final.result != "" {
+		t.Errorf("an aborted prompt must not yield a value, got %q", final.result)
+	}
+}
+
+func TestLineCtrlCAborts(t *testing.T) {
+	m := newLineModel("Remote name", "codeberg", plainStyles())
+	final := press(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if !final.aborted {
+		t.Error("Ctrl+C should mark the prompt as aborted")
+	}
+	if final.result != "" {
+		t.Errorf("an aborted prompt must not yield a value, got %q", final.result)
+	}
+}
+
+func TestLineEscKeepsTheDefault(t *testing.T) {
+	m := newLineModel("Remote name", "codeberg", plainStyles())
+	final := press(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if final.aborted {
+		t.Error("Esc must not abort the run")
+	}
+	if final.result != "codeberg" {
+		t.Errorf("Esc should keep the default, got %q", final.result)
 	}
 }
 
@@ -214,8 +331,8 @@ func TestSelectResultLabelReadsBackTheOption(t *testing.T) {
 
 func TestSelectWithNoOptionsReturnsDefault(t *testing.T) {
 	p, _, _ := newTest("")
-	if got := p.Select("Remote URL", nil, "ssh"); got != "ssh" {
-		t.Errorf("Select with no options = %q, want ssh", got)
+	if got, err := p.Select("Remote URL", nil, "ssh"); err != nil || got != "ssh" {
+		t.Errorf("Select with no options = %q (err %v), want ssh", got, err)
 	}
 }
 

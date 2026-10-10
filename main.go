@@ -57,10 +57,18 @@ type options struct {
 func main() {
 	err := run(os.Args[1:])
 	forge.Cleanup()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, ui.Errorf("%v", err))
-		os.Exit(1)
+	if err == nil {
+		return
 	}
+	// Ctrl+C is a decision, not a failure: say so plainly and leave without a
+	// stack of red text. Exit status 130 is what a shell expects from a
+	// SIGINT-terminated command.
+	if errors.Is(err, prompt.ErrAborted) {
+		fmt.Fprintln(os.Stderr, ui.Warnf("cancelled; nothing was created"))
+		os.Exit(130)
+	}
+	fmt.Fprintln(os.Stderr, ui.Errorf("%v", err))
+	os.Exit(1)
 }
 
 // reorderArgs makes flags work before or after the positional arguments,
@@ -241,7 +249,10 @@ func run(argv []string) error {
 	if len(targets) == 0 {
 		return reportNoBackend(candidates, forge.NoTargetsError(candidates))
 	}
-	target := pickTarget(ask, targets)
+	target, err := pickTarget(ask, targets)
+	if err != nil {
+		return err
+	}
 
 	login := target.Login
 	owner := o.owner
@@ -311,14 +322,20 @@ func run(argv []string) error {
 			if explicitRemote {
 				return fmt.Errorf("remote %q already exists in %s; pick another name with -remote", remoteName, local.Dir)
 			}
-			remoteName = askForRemoteName(ask, local, login.Name, remoteName)
+			remoteName, err = askForRemoteName(ask, local, login.Name, remoteName)
+			if err != nil {
+				return err
+			}
 			// The repository already has an origin and we are not taking it
 			// over, so tracking stays with origin unless the user says
 			// otherwise.
 			setUpstream = false
 			if remoteName != "origin" {
-				setUpstream = ask.YesNo(
+				setUpstream, err = ask.YesNo(
 					fmt.Sprintf("Set %q as upstream for branch %s?", remoteName, localBranch), false)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -479,9 +496,9 @@ func run(argv []string) error {
 //
 // The list is already narrowed by -tool/-host before it gets here, and the
 // first entry is the one fth would have picked on its own.
-func pickTarget(ask *prompt.Prompter, targets []forge.Target) forge.Target {
+func pickTarget(ask *prompt.Prompter, targets []forge.Target) (forge.Target, error) {
 	if len(targets) == 1 || !ask.Interactive() {
-		return targets[0]
+		return targets[0], nil
 	}
 	opts := make([]prompt.Option, 0, len(targets))
 	for _, t := range targets {
@@ -491,30 +508,36 @@ func pickTarget(ask *prompt.Prompter, targets []forge.Target) forge.Target {
 			Detail: t.Account,
 		})
 	}
-	got := ask.Select("Create the repository on", opts, targets[0].ID())
+	got, err := ask.Select("Create the repository on", opts, targets[0].ID())
+	if err != nil {
+		return forge.Target{}, err
+	}
 	for _, t := range targets {
 		if t.ID() == got {
-			return t
+			return t, nil
 		}
 	}
-	return targets[0]
+	return targets[0], nil
 }
 
 // askForRemoteName prompts for a name for the new remote, offering one
 // derived from the forge host and skipping names already in use. Pressing
 // Enter takes that suggestion.
-func askForRemoteName(ask *prompt.Prompter, local *scaffold.LocalState, host, taken string) string {
+func askForRemoteName(ask *prompt.Prompter, local *scaffold.LocalState, host, taken string) (string, error) {
 	suggest := scaffold.SuggestRemoteName(host, local.RemoteExists)
 	label := fmt.Sprintf("remote %q already exists in %s. Name for the new remote?", taken, local.Dir)
 	for {
-		answer := ask.Line(label, suggest)
+		answer, err := ask.Line(label, suggest)
+		if err != nil {
+			return "", err
+		}
 		if scaffold.ValidRemoteName(answer) && !local.RemoteExists(answer) {
-			return answer
+			return answer, nil
 		}
 		// Without a terminal there is nobody to re-ask, so stop and use the
 		// suggestion rather than spinning.
 		if !ask.Interactive() {
-			return suggest
+			return suggest, nil
 		}
 		if !scaffold.ValidRemoteName(answer) {
 			fmt.Fprintf(os.Stderr, "fth: %q is not a valid remote name; try again\n", answer)
@@ -565,10 +588,13 @@ func chooseScheme(ask *prompt.Prompter, flagValue string, explicit bool, host, o
 		return want, url, nil
 	}
 
-	got := ask.Select("Remote URL", []prompt.Option{
+	got, err := ask.Select("Remote URL", []prompt.Option{
 		{Label: "ssh", Value: "ssh", Detail: sshURL},
 		{Label: "https", Value: "https", Detail: httpsURL},
 	}, want)
+	if err != nil {
+		return "", "", err
+	}
 	if got == "https" {
 		return "https", httpsURL, nil
 	}

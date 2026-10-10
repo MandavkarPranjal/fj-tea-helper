@@ -94,10 +94,18 @@ func fakeTarget(tool forge.Tool, host, account string) forge.Target {
 func TestPickTargetTakesTheOnlyOption(t *testing.T) {
 	only := fakeTarget(forge.ToolTea, "gitea.com", "me")
 	one := []forge.Target{only}
-	if got := pickTarget(prompt.NonInteractive(io.Discard), one); got.ID() != only.ID() {
+	got, err := pickTarget(prompt.NonInteractive(io.Discard), one)
+	if err != nil {
+		t.Fatalf("pickTarget: %v", err)
+	}
+	if got.ID() != only.ID() {
 		t.Errorf("single target = %q, want %q", got.ID(), only.ID())
 	}
-	if got := pickTarget(prompt.New(strings.NewReader(""), os.Stderr), one); got.ID() != only.ID() {
+	got, err = pickTarget(prompt.New(strings.NewReader(""), os.Stderr), one)
+	if err != nil {
+		t.Fatalf("pickTarget: %v", err)
+	}
+	if got.ID() != only.ID() {
 		t.Errorf("single target without a terminal = %q, want %q", got.ID(), only.ID())
 	}
 }
@@ -109,7 +117,10 @@ func TestPickTargetFallsBackToTheFirst(t *testing.T) {
 		fakeTarget(forge.ToolFj, "codeberg.org", "a"),
 		fakeTarget(forge.ToolTea, "gitea.com", "b"),
 	}
-	got := pickTarget(prompt.NonInteractive(io.Discard), list)
+	got, err := pickTarget(prompt.NonInteractive(io.Discard), list)
+	if err != nil {
+		t.Fatalf("pickTarget: %v", err)
+	}
 	if got.ID() != "fj/codeberg.org" {
 		t.Errorf("fallback = %q, want fj/codeberg.org", got.ID())
 	}
