@@ -47,7 +47,9 @@ func TestReorderArgsNonBoolFlagConsumesDashValue(t *testing.T) {
 	// that starts with a dash you must use "--" or owner/name.
 	fs := newTestFlags()
 	got := reorderArgs(fs, []string{"-name", "-weird", "-dir", "/tmp/x"})
-	fs.Parse(got)
+	if err := fs.Parse(got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
 	if fs.Arg(0) != "" {
 		t.Errorf("expected no positional, got %q", fs.Arg(0))
 	}
@@ -59,7 +61,9 @@ func TestReorderArgsNonBoolFlagConsumesDashValue(t *testing.T) {
 func TestReorderArgsDoubleDashKeepsDashyName(t *testing.T) {
 	fs := newTestFlags()
 	got := reorderArgs(fs, []string{"--force", "--", "-weird-name"})
-	fs.Parse(got)
+	if err := fs.Parse(got); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
 	if fs.Arg(0) != "-weird-name" {
 		t.Errorf("positional = %q, want %q", fs.Arg(0), "-weird-name")
 	}

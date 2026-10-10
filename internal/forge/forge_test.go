@@ -83,9 +83,10 @@ func TestFirstUserLine(t *testing.T) {
 		// Real `fj whoami` output. The user and host are each wrapped in
 		// Unicode isolates (U+2068 FIRST STRONG ISOLATE / U+2069 POP
 		// DIRECTIONAL ISOLATE) so the name cannot be spoofed; those must be
-		// stripped before the sentence can be parsed.
-		{"currently signed into ⁨MandavkarPranjal⁩@⁨codeberg.org⁩\n", "MandavkarPranjal"},
-		{"  currently signed into ⁨some⁩@⁨git.example.com⁩  \n", "some"},
+		// stripped before the sentence can be parsed. Escaped here so the
+		// invisible characters stay visible in review.
+		{"currently signed into \u2068MandavkarPranjal\u2069@\u2068codeberg.org\u2069\n", "MandavkarPranjal"},
+		{"  currently signed into \u2068some\u2069@\u2068git.example.com\u2069  \n", "some"},
 	}
 	for _, c := range cases {
 		if got := firstUserLine(c.in); got != c.want {

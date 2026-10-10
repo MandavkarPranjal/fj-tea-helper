@@ -52,8 +52,12 @@ func TestCreateScaffoldsAndPushes(t *testing.T) {
 func TestCreateRefusesNonEmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "busy")
-	os.MkdirAll(target, 0o755)
-	os.WriteFile(filepath.Join(target, "keep.txt"), []byte("x"), 0o644)
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "keep.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
 
 	if _, err := Create(Options{Dir: target, Name: "p"}, renderLicenseStub, gitignoreStub); err == nil {
 		t.Fatal("expected refusal for non-empty directory")

@@ -42,7 +42,6 @@ type options struct {
 	year        int
 	holder      string
 	dryRun      bool
-	yes         bool
 	list        bool
 	showVersion bool
 	verbose     bool

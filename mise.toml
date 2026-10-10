@@ -1,0 +1,59 @@
+# mise task runner + toolchain config for fj-tea-helper
+# https://mise.jdx.dev/configuration.html
+#
+# Usage:
+#   mise run build     compile the binary
+#   mise run test      run the test suite
+#   mise run check     fmt + vet + test
+#   mise run install   install to ~/.local/bin
+#   mise run           list available tasks
+
+[tools]
+go = "1.27"
+golangci-lint = "2.14"
+
+[env]
+# Keep go's own cache inside XDG dirs, consistent with the rest of the system.
+GOBIN = "{{env.HOME}}/.local/bin"
+
+[tasks.build]
+description = "Compile the binary into the project root"
+run = "go build -o fj-tea-helper ."
+
+[tasks.test]
+description = "Run the test suite"
+run = "go test ./..."
+
+[tasks.fmt]
+description = "Format all Go sources"
+run = "gofmt -w ."
+
+[tasks.fmtcheck]
+description = "Fail if any Go source is unformatted"
+run = "out=$(gofmt -l .); if [ -n \"$out\" ]; then echo \"unformatted files:\"; echo \"$out\"; exit 1; fi"
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.check]
+description = "Verify formatting, lint, vet and test"
+depends = ["fmtcheck", "lint", "vet", "test"]
+
+[tasks.install]
+description = "Install the binary into ~/.local/bin"
+depends = ["build"]
+run = "mkdir -p \"$HOME/.local/bin\" && install -m 0755 fj-tea-helper \"$HOME/.local/bin/fj-tea-helper\" && echo \"installed $HOME/.local/bin/fj-tea-helper\""
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = "rm -f fj-tea-helper"
+
+[tasks.lint]
+description = "Run golangci-lint if it is available"
+run = "golangci-lint run ./..."
+
+[tasks.run]
+description = "Build then run fj-tea-helper with the given arguments"
+depends = ["build"]
+run = "./fj-tea-helper \"$@\""

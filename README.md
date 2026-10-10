@@ -28,13 +28,19 @@ Plan
 
 ## Install
 
+This project uses [mise](https://mise.jdx.dev) for the toolchain and tasks:
+
 ```sh
-make build          # produces ./fj-tea-helper
-make install        # installs into ~/.local/bin
+mise run build          # produces ./fj-tea-helper
+mise run install        # installs into ~/.local/bin
+mise run check          # fmtcheck + lint + vet + tests
+mise run run -- -list   # build, then run the CLI
+mise tasks              # list all tasks
 ```
 
-Requires Go 1.21+ to build, plus `git`. At runtime it shells out to `fj` and/or
-`tea`, whichever you have authenticated.
+`mise.toml` pins Go 1.27 and golangci-lint, so no manual toolchain setup is
+needed. At runtime the binary shells out to `fj` and/or `tea`, whichever you
+have authenticated. `git` must be on `PATH`.
 
 ## Usage
 
@@ -136,14 +142,20 @@ Backends
 ## Development
 
 ```sh
-make test          # go test ./...
-make check         # gofmt + go vet + tests
-make build         # build the binary
+mise run test      # go test ./...
+mise run fmt       # gofmt -w .
+mise run lint      # golangci-lint
+mise run vet       # go vet ./...
+mise run check     # fmtcheck + lint + vet + test
+mise run build     # build the binary
+mise run clean     # remove the binary
+mise run install   # install into ~/.local/bin
 ```
 
 Layout:
 
 - `main.go` — CLI parsing, flags, orchestration
+- `mise.toml` — pinned toolchain (Go, golangci-lint) and task definitions
 - `internal/forge` — backend abstraction over `tea` and `fj`
   (`forge.go`, `tea.go`, `fj.go`, `detect.go`, `exec.go`)
 - `internal/scaffold` — local git repository creation

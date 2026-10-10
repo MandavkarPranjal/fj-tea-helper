@@ -181,16 +181,6 @@ func isAuthError(msg string) bool {
 	return false
 }
 
-// execError is returned when a backend command fails.
-type execError struct {
-	Tool Tool
-	Host string
-	Err  error
-}
-
-func (e *execError) Error() string { return e.Err.Error() }
-func (e *execError) Unwrap() error { return e.Err }
-
 // wrapAuthError attaches an actionable hint when the failure looks like an
 // authentication problem.
 func wrapAuthError(tool Tool, host string, err error) error {
