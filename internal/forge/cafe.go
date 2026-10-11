@@ -9,7 +9,7 @@ import (
 
 // cafeBackend wraps the `cafe` CLI, the client for GitCafe (git.cafe).
 //
-// It is the easiest of the three backends to drive because `cafe` speaks JSON:
+// It is among the easiest backends to drive because `cafe` speaks JSON:
 // `cafe auth status --json` and `cafe repo create --json` both emit a stable
 // envelope, so nothing here has to scrape prose out of a human-readable line
 // the way the fj backend must.

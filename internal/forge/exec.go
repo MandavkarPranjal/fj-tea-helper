@@ -180,6 +180,14 @@ func authHint(tool Tool, host string) string {
 	if tool == ToolCafe {
 		return fmt.Sprintf("Authenticate with: cafe auth login --host https://%s/api", host)
 	}
+	if tool == ToolGh {
+		// gh defaults to github.com, so the flag is only worth showing for an
+		// Enterprise host the user could otherwise never reach.
+		if h := bareHost(host); h != "" && !strings.EqualFold(h, "github.com") {
+			return fmt.Sprintf("Authenticate with: gh auth login --hostname %s", h)
+		}
+		return "Authenticate with: gh auth login"
+	}
 	return fmt.Sprintf("Authenticate with: fj auth login --host %s", host)
 }
 
@@ -195,6 +203,13 @@ func isAuthError(msg string) bool {
 		"no such host",
 		"token expired",
 		"authentication",
+		// gh phrases its failures differently from the Forgejo CLIs: it points
+		// at the login command by name and calls a missing credential a
+		// "bad credentials" or an absent token rather than an expired one.
+		"gh auth login",
+		"bad credentials",
+		"no valid oauth token",
+		"you are not logged into any github hosts",
 		"not logged in",
 		"please login",
 		"requires authentication",

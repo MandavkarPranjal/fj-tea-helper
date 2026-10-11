@@ -1,6 +1,7 @@
-// Package forge provides a thin, uniform wrapper over the `tea` (Gitea) and
-// `fj` (Forgejo) command line tools so a caller can create a repository
-// without caring which CLI is installed or how its flags differ.
+// Package forge provides a thin, uniform wrapper over the `tea` (Gitea),
+// `fj` (Forgejo), `cafe` (GitCafe) and `gh` (GitHub) command line tools so a
+// caller can create a repository without caring which CLI is installed or how
+// its flags differ.
 package forge
 
 import (
@@ -20,11 +21,15 @@ const (
 	ToolFj Tool = "fj"
 	// ToolCafe is the GitCafe `cafe` CLI.
 	ToolCafe Tool = "cafe"
+	// ToolGh is GitHub's own `gh` CLI.
+	ToolGh Tool = "gh"
 )
 
 // AllTools lists every supported backend, in the order `-tool auto` probes
-// them.
-func AllTools() []Tool { return []Tool{ToolFj, ToolTea, ToolCafe} }
+// them. gh comes last so that its very wide reach — it is the most commonly
+// installed of the four — never quietly changes which instance Enter picks for
+// someone who came here to work on their Forgejo or Gitea host.
+func AllTools() []Tool { return []Tool{ToolFj, ToolTea, ToolCafe, ToolGh} }
 
 // InstallHint returns the one-line "here is how to get this tool" message for
 // a backend. It is the fix, not just the diagnosis, so every "not installed"
@@ -37,6 +42,8 @@ func InstallHint(tool Tool) string {
 		return "install it from https://codeberg.org/forgejo/forgejo-cli/releases"
 	case ToolCafe:
 		return cafeInstallHint
+	case ToolGh:
+		return ghInstallHint
 	}
 	return ""
 }
@@ -152,6 +159,8 @@ func Discover(tool Tool, opts ...Option) (Backend, error) {
 		b = fjBackend{}
 	case ToolCafe:
 		b = cafeBackend{}
+	case ToolGh:
+		b = ghBackend{}
 	default:
 		return nil, fmt.Errorf("unknown tool %q (want %s)", tool, AllTools())
 	}

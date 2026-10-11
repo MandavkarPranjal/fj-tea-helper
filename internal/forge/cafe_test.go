@@ -239,7 +239,7 @@ func TestCafeUsesExplicitBinary(t *testing.T) {
 }
 
 func TestInstallHintCoversEveryBackend(t *testing.T) {
-	for _, tc := range []Tool{ToolTea, ToolFj, ToolCafe} {
+	for _, tc := range []Tool{ToolTea, ToolFj, ToolCafe, ToolGh} {
 		if InstallHint(tc) == "" {
 			t.Errorf("InstallHint(%q) is empty", tc)
 		}

@@ -125,7 +125,7 @@ func run(argv []string) error {
 	fs := flag.NewFlagSet("fth", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-	fs.StringVar(&o.tool, "tool", "auto", "backend CLI to use: auto, tea, fj, or cafe")
+	fs.StringVar(&o.tool, "tool", "auto", "backend CLI to use: auto, tea, fj, cafe, or gh")
 	fs.StringVar(&o.cafeBin, "cafe-bin", "", "path to the cafe binary, if it is not on PATH")
 	fs.StringVar(&o.host, "host", "", "instance host to create on (e.g. gitea.com)")
 	fs.StringVar(&o.owner, "owner", "", "repository owner (default: your account)")
@@ -137,7 +137,7 @@ func run(argv []string) error {
 	fs.StringVar(&o.branch, "branch", "main", "default branch name")
 	fs.StringVar(&o.remote, "remote", "origin", "git remote name")
 	fs.StringVar(&o.dir, "dir", "", "local directory (default: ./<name>)")
-	fs.StringVar(&o.trustModel, "trust-model", "", "Gitea trust model (tea only)")
+	fs.StringVar(&o.trustModel, "trust-model", "", "Gitea trust model (tea only; ignored by other backends)")
 	fs.BoolVar(&o.template, "template", false, "mark the repository as a template (tea only)")
 	fs.BoolVar(&o.readme, "readme", true, "write a README.md")
 	fs.StringVar(&o.url, "url", "ssh", "remote URL to use: ssh or https")
@@ -721,17 +721,17 @@ func logf(verbose bool, format string, args ...any) {
 }
 
 func usage(fs *flag.FlagSet) {
-	fmt.Fprintf(os.Stderr, `fth %s — create a repo on Forgejo, Gitea or GitCafe
+	fmt.Fprintf(os.Stderr, `fth %s — create a repo on Forgejo, Gitea, GitCafe or GitHub
 
 Usage:
   fth [flags] <name>
   fth [flags] <owner>/<name>
   fth -list
 
-It detects every 'fj' (Forgejo), 'tea' (Gitea) and 'cafe' (GitCafe) login you
-have, asks which instance to create on, creates the remote repository,
-scaffolds a local git repo with README/.gitignore/LICENSE, adds the remote and
-pushes the initial commit.
+It detects every 'fj' (Forgejo), 'tea' (Gitea), 'cafe' (GitCafe) and 'gh'
+(GitHub) login you have, asks which instance to create on, creates the remote
+repository, scaffolds a local git repo with README/.gitignore/LICENSE, adds the
+remote and pushes the initial commit.
 
 Flags:
 `, version)
@@ -742,6 +742,8 @@ Examples:
   fth -tool fj -host codeberg.org -private -lang go myproject
   fth -tool tea -license MIT -lang node myproject
   fth -tool cafe -cafe-bin ~/.bun/install/global/node_modules/@gitcafe/cli/bin/cafe.js myproject
+  fth -tool gh -host github.com -license MIT myproject
+  fth -tool gh -host ghe.example.com -private myproject
   fth -no-push -no-scaffold myproject
 `)
 	_ = time.Now
