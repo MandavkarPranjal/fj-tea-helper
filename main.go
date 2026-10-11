@@ -739,11 +739,11 @@ Flags:
 	fmt.Fprintf(os.Stderr, `
 Examples:
   fth myproject
-  fth -tool fj -host codeberg.org -private -lang go myproject
+  fth -tool fj -host codeberg.org -visibility private -lang go myproject
   fth -tool tea -license MIT -lang node myproject
   fth -tool cafe -cafe-bin ~/.bun/install/global/node_modules/@gitcafe/cli/bin/cafe.js myproject
   fth -tool gh -host github.com -license MIT myproject
-  fth -tool gh -host ghe.example.com -private myproject
+  fth -tool gh -host ghe.example.com -visibility private myproject
   fth -no-push -no-scaffold myproject
 `)
 	_ = time.Now
