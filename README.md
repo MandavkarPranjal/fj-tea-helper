@@ -1,7 +1,7 @@
 # fth
 
-**fth** (*fj-tea-helper*) creates a new repository on Forgejo, Gitea or GitCafe
-in one command, using the `fj`, `tea` or `cafe` CLI as the engine.
+**fth** (*fj-tea-helper*) creates a new repository on Forgejo, Gitea, GitCafe or
+GitHub in one command, using the `fj`, `tea`, `cafe` or `gh` CLI as the engine.
 
 It detects which CLI you're authenticated against, creates the remote
 repository, scaffolds a local git repository with `README.md`, `.gitignore` and
@@ -39,8 +39,8 @@ mise tasks              # list all tasks
 ```
 
 `mise.toml` pins Go 1.27 and golangci-lint, so no manual toolchain setup is
-needed. At runtime the binary shells out to whichever of `fj`, `tea` or `cafe`
-you have authenticated. `git` must be on `PATH`.
+needed. At runtime the binary shells out to whichever of `fj`, `tea`, `cafe` or
+`gh` you have authenticated. `git` must be on `PATH`.
 
 ## Usage
 
@@ -57,9 +57,9 @@ Flags may appear before or after the name, so `fth myproject -private` and
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `-tool` | `auto` | Backend CLI: `auto`, `tea`, `fj`, or `cafe`; narrows the instance picker |
+| `-tool` | `auto` | Backend CLI: `auto`, `tea`, `fj`, `cafe`, or `gh`; narrows the instance picker |
 | `-cafe-bin` | `cafe` on PATH | Explicit path to the `cafe` binary |
-| `-host` | detected | Instance host, e.g. `gitea.com`; narrows the instance picker |
+| `-host` | detected | Instance host, e.g. `gitea.com` or `github.com`; narrows the instance picker |
 | `-owner` | your account | Repository owner or organisation |
 | `-description` | – | Short repository description |
 | `-visibility` | `public` | `public` or `private` |
@@ -71,8 +71,8 @@ Flags may appear before or after the name, so `fth myproject -private` and
 | `-dir` | `./<name>` | Local directory to scaffold |
 | `-readme` | `true` | Write a `README.md` |
 | `-url` | `ssh` | Clone URL to wire up: `ssh` or `https` |
-| `-trust-model` | – | Gitea trust model (`tea` only) |
-| `-template` | `false` | Mark as a template repository (`tea` only) |
+| `-trust-model` | – | Gitea trust model (`tea` only; ignored elsewhere) |
+| `-template` | `false` | Mark as a template repository (`tea` only; ignored elsewhere) |
 | `-no-push` | `false` | Create the remote but don't push |
 | `-no-scaffold` | `false` | Create only the remote repository |
 | `-force` | `false` | Scaffold even if the local directory isn't empty |
@@ -98,6 +98,12 @@ fth -tool tea -owner myorg -license Apache-2.0 -no-scaffold myservice
 
 # Force GitCafe, using a cafe binary that is not on PATH
 fth -tool cafe -cafe-bin ~/.bun/install/global/node_modules/@gitcafe/cli/bin/cafe.js myservice
+
+# Public repo on GitHub
+fth -tool gh -license MIT -lang go myservice
+
+# Private repo on a GitHub Enterprise Server instance
+fth -tool gh -host ghe.example.com -visibility private -owner myorg myservice
 
 # Create the repo and local dir, but decide about pushing later
 fth -no-push myservice
@@ -256,7 +262,7 @@ Plan
 
 ## Backend detection
 
-fth probes all three CLIs and then asks **which instance to create on**:
+fth probes all four CLIs and then asks **which instance to create on**:
 
 ```console
 $ fth myproject
@@ -264,6 +270,7 @@ Create the repository on
   > fj    codeberg.org  MandavkarPranjal
     tea   gitea.com     MandavkarPranjal
     cafe  git.cafe      mandavkarpranjal
+    gh    github.com    MandavkarPranjal
   (up/down or j/k to move, enter to choose)
 Create the repository on: fj    codeberg.org
 ```
@@ -276,15 +283,19 @@ the first letter of a row to jump straight to it, Enter to choose.
 
 How the list is built:
 
-1. Run `fj auth list` / `tea logins list -o json` / `cafe auth status --json` to
-   find configured logins.
+1. Run `fj auth list` / `tea logins list -o json` / `cafe auth status --json` /
+   `gh auth status --json hosts` to find configured logins.
 2. Confirm each login actually works — for `fj` this means `fj whoami`, because
    `fj auth list` happily reports instances whose stored OAuth grant has been
    revoked. A login that fails is left out of the list rather than offered and
    then failing later.
-3. Order the results by tool (`fj`, then `tea`, then `cafe`), and within each
+3. Order the results by tool (`fj`, then `tea`, `cafe`, `gh`), and within each
    tool put the CLI's own default login first. That first row is the one Enter
    accepts, so pressing Enter twice always does something sensible.
+
+`gh` is probed **last** deliberately. It is by far the most likely of the four
+to be installed, and putting it first would quietly change what Enter picks for
+someone who came to work on their Forgejo or Gitea host.
 
 `-tool` and `-host` narrow the list before it is shown, and are what you want in
 a script:
@@ -298,7 +309,7 @@ A flag that matches nothing is an error rather than a silent fallback to a
 different instance:
 
 ```console
-error: no login for "nope.example" (known: fj/codeberg.org, tea/gitea.com, cafe/git.cafe)
+error: no login for "nope.example" (known: fj/codeberg.org, tea/gitea.com, cafe/git.cafe, gh/github.com)
 ```
 
 With `-yes`, or when stdin is not a terminal, fth takes the first entry and says
@@ -315,12 +326,15 @@ Backends
         ✓ gitea.com               user=MandavkarPranjal
   cafe cafe 0.6.0
         ✓ git.cafe                user=mandavkarpranjal
+  gh   gh 2.100.0
+        ✓ github.com             user=MandavkarPranjal
 ```
 
 A backend that is missing is reported with how to install it:
 
 ```console
   cafe not installed on PATH; install it with: bun install -g @gitcafe/cli
+  gh not installed on PATH; install it from https://cli.github.com
 ```
 
 ### GitCafe
@@ -350,6 +364,48 @@ Unlike `tea`, `cafe` accepts a personal account for its owner flag, so `--org`
 is only sent for real organisations. `fj` and `cafe` cannot seed templates
 server-side (see below), so both take the local-scaffold path.
 
+### GitHub
+
+`gh` ([GitHub CLI](https://cli.github.com)) is maintained by GitHub itself:
+
+```sh
+brew install gh          # or: sudo apt install gh
+gh auth login
+```
+
+Unlike the other three, `gh` is not tied to one instance — it is authenticated
+against `github.com` **and any number of GitHub Enterprise hosts**, so it is
+the backend where the instance picker earns its keep:
+
+```console
+$ fth myproject
+Create the repository on
+  > fj    codeberg.org  MandavkarPranjal
+    gh    github.com    MandavkarPranjal
+    gh    ghe.acme.io   octocat
+```
+
+Each `gh` row is a host `gh` holds a working token for. A host whose active
+account has expired is left out rather than offered and then failing later.
+
+Three things behave differently from the Forgejo backends:
+
+- **The host comes from the environment, not a flag.** `gh` selects its target
+  with `GH_HOST`, so `fth` sets it for you. `-host ghe.acme.io` works with or
+  without `-tool gh`, and Enterprise repos are created on the right instance.
+  Within `gh`, `github.com` is listed first so it is the default.
+- **Visibility is always passed explicitly.** Given neither `--public` nor
+  `--private`, `gh repo create` falls back to interactive prompts. `fth` never
+  lets a CLI take over the terminal, so it always states which one it wants.
+- **`README`/`.gitignore`/`LICENSE` are written locally, never by the server.**
+  `gh`'s `--add-readme`, `--gitignore` and `--license` all create an initial
+  commit on the new repository, which would then collide with the commit `fth`
+  pushes from the local scaffold. So `fth` takes the local-scaffold path, the
+  same one `fj` and `cafe` already use.
+
+Because `gh auth status` can print a live token (`--show-token`), its output
+goes through the same credential scrubber as every other backend's.
+
 ## Behaviour notes
 
 - **Nothing is created if the local directory is unusable.** The destination is
@@ -357,9 +413,10 @@ server-side (see below), so both take the local-scaffold path.
   leave an orphan repo on your server. An existing git repository *is* usable —
   see [Publishing an existing git repository](#publishing-an-existing-git-repository).
 - **Templates are generated locally, not by the server.** `tea` can seed
-  `.gitignore`/`LICENSE`/`README` server-side, but `fj` and `cafe` cannot, so
+  `.gitignore`/`LICENSE`/`README` server-side, but `fj`, `cafe` and `gh` cannot
+  do so without creating a commit that would clash with the one being pushed, so
   every path behaves the same: the helper writes the files and pushes them.
-- **Backend commands run from a scratch directory.** All three CLIs can infer a
+- **Backend commands run from a scratch directory.** All four CLIs can infer a
   repository from `$PWD`; running them from a neutral directory stops an
   unrelated local checkout from leaking into the operation.
 - **Credentials are scrubbed from captured output.** `run` folds a command's
@@ -391,8 +448,8 @@ Layout:
 
 - `main.go` — CLI parsing, flags, orchestration
 - `mise.toml` — pinned toolchain (Go, golangci-lint) and task definitions
-- `internal/forge` — backend abstraction over `tea`, `fj` and `cafe`
-  (`forge.go`, `tea.go`, `fj.go`, `cafe.go`, `detect.go`, `exec.go`)
+- `internal/forge` — backend abstraction over `tea`, `fj`, `cafe` and `gh`
+  (`forge.go`, `tea.go`, `fj.go`, `cafe.go`, `gh.go`, `detect.go`, `exec.go`)
 - `internal/scaffold` — local git repository creation and remote attach
   (`scaffold.go`, `repo.go`)
 - `internal/prompt` — Bubble Tea prompts: text input and single-choice selection

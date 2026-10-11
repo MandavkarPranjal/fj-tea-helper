@@ -261,6 +261,8 @@ func loginHint(t Tool) string {
 		return "fj auth login"
 	case ToolCafe:
 		return "cafe auth login"
+	case ToolGh:
+		return "gh auth login"
 	}
 	return fmt.Sprintf("%s login", t)
 }
