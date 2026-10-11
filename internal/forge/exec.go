@@ -180,6 +180,11 @@ func authHint(tool Tool, host string) string {
 	if tool == ToolCafe {
 		return fmt.Sprintf("Authenticate with: cafe auth login --host https://%s/api", host)
 	}
+	if tool == ToolTry {
+		// One credential covers the whole platform, so there is no host to
+		// name; the CLI key is what has to be replaced.
+		return "Authenticate with: try auth login"
+	}
 	if tool == ToolGh {
 		// gh defaults to github.com, so --hostname is only worth showing for
 		// an Enterprise host the user could otherwise never reach. An empty
@@ -216,6 +221,13 @@ func isAuthError(msg string) bool {
 		"not logged in",
 		"please login",
 		"requires authentication",
+		// The Trylle CLI phrases a missing or rejected credential as an
+		// absent or invalid API key rather than an expired session.
+		"try auth login",
+		"not authenticated",
+		"invalid api key",
+		"missing api key",
+		"no api key",
 	} {
 		if strings.Contains(m, s) {
 			return true

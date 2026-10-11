@@ -44,7 +44,7 @@ func Detect(ctx context.Context, tools []Tool, opts ...Option) ([]Candidate, err
 		}
 		if !b.Available(ctx) {
 			out = append(out, Candidate{Backend: b, Users: map[string]string{},
-				Notes: []string{fmt.Sprintf("%s is not installed on PATH%s", t, hintSuffix(t))}})
+				Notes: []string{unavailableNote(ctx, b)}})
 			continue
 		}
 		c := Candidate{Backend: b, Users: map[string]string{}}
@@ -263,6 +263,8 @@ func loginHint(t Tool) string {
 		return "cafe auth login"
 	case ToolGh:
 		return "gh auth login"
+	case ToolTry:
+		return "try auth login"
 	}
 	return fmt.Sprintf("%s login", t)
 }
@@ -283,6 +285,20 @@ func loginHints(cs []Candidate) []string {
 		}
 	}
 	return out
+}
+
+// unavailableNote explains why a backend could not be used. Most are simply
+// missing; a backend that has something specific to say about it (the Trylle
+// CLI being shadowed by an unrelated program named `try`, say) adds it here, so
+// the listing shows the real obstacle rather than a flat "not installed".
+func unavailableNote(ctx context.Context, b Backend) string {
+	note := fmt.Sprintf("%s is not installed on PATH%s", b.Tool(), hintSuffix(b.Tool()))
+	if n, ok := b.(Noter); ok {
+		if extra := n.UnavailableNote(ctx); extra != "" {
+			note += "; " + extra
+		}
+	}
+	return note
 }
 
 // hintSuffix turns an InstallHint into a trailing clause for an error message.
