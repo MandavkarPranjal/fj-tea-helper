@@ -213,13 +213,13 @@ func run(argv []string) error {
 	// named explicitly there is no need to probe the other CLI.
 	tools := forge.AllTools()
 	toolName := o.tool
-	if o.tool != "" && o.tool != "auto" {
-		// Accept the names people actually type — `trylle`, `trylle-cli` — and
-		// reject a typo here rather than at the first command invocation.
-		t, err := forge.ParseTool(o.tool)
-		if err != nil {
-			return err
-		}
+	// Normalise before deciding whether to narrow. Comparing the raw flag
+	// would let `-tool AUTO` or `-tool " auto "` fall through as if a backend
+	// had been named, and the literal "auto" would then reach Discover as an
+	// unknown tool instead of probing every backend.
+	if t, err := forge.ParseTool(o.tool); err != nil {
+		return err
+	} else if t != "" && t != "auto" {
 		toolName, tools = string(t), []forge.Tool{t}
 	}
 	// Probing logins means a handful of network round-trips, so it is worth

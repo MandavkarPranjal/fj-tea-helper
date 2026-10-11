@@ -92,8 +92,10 @@ func clean(s string) string { return redactSecrets(invisibleRe.ReplaceAllString(
 var secretFieldRe = regexp.MustCompile(`(?i)("?\b(?:access[_-]?token|api[_-]?token|token|secret|password|passwd|authorization)\b"?)(\s*[:=]\s*)("?)[A-Za-z0-9._\-+/=]{8,}("?)`)
 
 // secretTokenRe catches credentials fth has no field name for, such as the
-// GitCafe "gct_" prefix.
-var secretTokenRe = regexp.MustCompile(`\b(?:gct|gh[pousr]|glpat|forgejo)_[A-Za-z0-9._\-]{8,}`)
+// GitCafe "gct_" prefix. Trylle's key is "trylle_sk_...", which the field-name
+// pattern cannot see: `try auth status --json` reports it as "apiKey", a name
+// no other backend uses and no field-name pattern would guess.
+var secretTokenRe = regexp.MustCompile(`\b(?:gct|gh[pousr]|glpat|forgejo|trylle)_[A-Za-z0-9._\-]{8,}`)
 
 // redactSecrets blanks out credentials in captured CLI output.
 //
@@ -183,7 +185,13 @@ func authHint(tool Tool, host string) string {
 	if tool == ToolTry {
 		// One credential covers the whole platform, so there is no host to
 		// name; the CLI key is what has to be replaced.
-		return "Authenticate with: try auth login"
+		//
+		// `trylle-cli`, not `try`: @trylle/trylle-cli installs two
+		// executables and a bare `try` is very often an unrelated program on
+		// PATH (an "ephemeral workspace manager" at 1.10.1 is common). fth
+		// refuses to trust that one itself — see isTrylleCLI in try.go — so
+		// naming it here would send the user to the wrong program.
+		return "Authenticate with: trylle-cli auth login"
 	}
 	if tool == ToolGh {
 		// gh defaults to github.com, so --hostname is only worth showing for

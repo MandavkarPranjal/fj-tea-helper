@@ -120,7 +120,7 @@ exit 1
 	if err == nil {
 		t.Fatal("expected an error with no credential")
 	}
-	if !strings.Contains(err.Error(), "try auth login") {
+	if !strings.Contains(err.Error(), "trylle-cli auth login") {
 		t.Errorf("error = %v, want it to name the login command", err)
 	}
 }
@@ -238,7 +238,10 @@ exit 1
 	if err == nil {
 		t.Fatal("expected a failure")
 	}
-	if !strings.Contains(err.Error(), "try auth login") {
+	// The CLI's own wording may still say `try`, but fth's hint must name the
+	// unambiguous executable: `trylle-cli auth login` does not contain the
+	// substring "try auth login".
+	if !strings.Contains(err.Error(), "trylle-cli auth login") {
 		t.Errorf("error = %v, want it to point at the login command", err)
 	}
 }
@@ -377,8 +380,15 @@ func TestTryCreateHint(t *testing.T) {
 	}
 }
 
-// The CLI holds a live credential, so `try auth token` output must be scrubbed
+// The CLI holds a live credential, so `try auth status` output must be scrubbed
 // on the same terms as cafe's and gh's.
+//
+// The assertion is on the RAW captured string, not on a decoded struct.
+// Decoding into tryAuthJSON cannot catch a leak, because that struct has no
+// field for apiKey: json.Unmarshal drops the unknown key on the floor, so the
+// credential would be gone whether or not the scrubber had run, and the test
+// would pass either way. Reading the cleaned output directly is what actually
+// proves clean() removed it.
 func TestTryTokenNeverLeaks(t *testing.T) {
 	writeStubTry(t, "trylle-cli", `#!/bin/sh
 case " $* " in
@@ -389,14 +399,27 @@ esac
 exit 1
 `)
 	tb := tryBackend{}
-	if _, err := tb.Logins(context.Background()); err != nil {
+	ctx := context.Background()
+
+	// The ordinary path must still work with the key present.
+	if _, err := tb.Logins(ctx); err != nil {
 		t.Fatalf("Logins: %v", err)
 	}
-	// status() is unexported and its error is checked above; the point here is
-	// that the credential never reaches the decoded struct at all.
-	out, _ := tb.status(context.Background())
-	if out.Viewer.Login != "octocat" {
-		t.Errorf("login = %q, want octocat", out.Viewer.Login)
+
+	out, err := tb.exec(ctx, "auth", "status")
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if strings.Contains(out, "trylle_sk_0123456789abcdef") {
+		t.Errorf("credential survived scrubbing: %s", out)
+	}
+	if !strings.Contains(out, "[redacted]") {
+		t.Errorf("output = %s, want the credential replaced rather than merely dropped", out)
+	}
+	// And the rest of the payload must be intact: a scrubber that ate the
+	// whole response would pass the check above while leaving fth blind.
+	if !strings.Contains(out, "octocat") {
+		t.Errorf("output = %s, want the captured payload", out)
 	}
 }
 
@@ -438,8 +461,10 @@ func TestAllToolsPutsTrylleLast(t *testing.T) {
 	}
 }
 
+// `trylle-cli`, not `try`: the login hint must name the executable fth would
+// actually trust, since a bare `try` is often a different program.
 func TestTryAuthHintNamesTheLoginCommand(t *testing.T) {
-	if got := authHint(ToolTry, "trylle.com"); !strings.Contains(got, "try auth login") {
+	if got := authHint(ToolTry, "trylle.com"); !strings.Contains(got, "trylle-cli auth login") {
 		t.Errorf("hint = %q", got)
 	}
 }

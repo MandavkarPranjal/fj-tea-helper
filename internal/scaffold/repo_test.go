@@ -3,6 +3,7 @@ package scaffold
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,7 +13,10 @@ func newRepoWithCommit(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	for _, args := range [][]string{
-		{"init", "--quiet"},
+		// Pin the branch: these tests push "main" explicitly, and a machine
+		// with init.defaultBranch=master would otherwise fail every one of
+		// them on a refspec that matches nothing.
+		{"init", "--quiet", "-b", "main"},
 		{"config", "user.email", "t@example.com"},
 		{"config", "user.name", "T"},
 	} {
@@ -235,7 +239,10 @@ func TestPushWithoutUpstreamLeavesTrackingAlone(t *testing.T) {
 func seededRemote(t *testing.T) (dir, sha string) {
 	t.Helper()
 	dir = t.TempDir()
-	if _, err := git(dir, "init", "--bare", "--quiet"); err != nil {
+	// -b main keeps HEAD on the branch the seed is pushed to; otherwise a
+	// clone of the bare repo checks out nothing and the fixture cannot be
+	// extended with a second commit.
+	if _, err := git(dir, "init", "--bare", "--quiet", "-b", "main"); err != nil {
 		t.Fatal(err)
 	}
 	// Seed it the way a host does: a single README commit on a branch that
@@ -358,6 +365,150 @@ func TestPushReconcilingSeedRefusesRealHistory(t *testing.T) {
 	}
 	if after != realTip {
 		t.Errorf("remote tip moved to %s, want %s: real work was overwritten", after, realTip)
+	}
+}
+
+// A lone root commit is not proof of a placeholder: a rewritten branch or a
+// repository initialised by hand also has exactly one parentless commit, and
+// force-pushing over it would destroy real work. The placeholder additionally
+// carries the platform's own subject and nothing but a README.
+func TestPushReconcilingSeedRefusesLookalikeRootCommit(t *testing.T) {
+	remote, _ := seededRemote(t)
+	// Reset the branch to a single root commit that is NOT the platform's
+	// placeholder: same shape as a seed, different content.
+	work := t.TempDir()
+	if _, err := git(work, "clone", "--quiet", remote, "."); err != nil {
+		t.Fatal(err)
+	}
+	// Rebuild history from nothing under a throwaway branch name, so the
+	// orphan cannot collide with the branch we cloned onto.
+	if _, err := git(work, "checkout", "--quiet", "--orphan", "fresh"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(work, "rm", "-r", "--quiet", "--cached", "."); err != nil {
+		t.Fatal(err)
+	}
+	// Drop the README the clone brought along, so the lookalike's tree holds
+	// only the real file.
+	if err := os.Remove(filepath.Join(work, seedReadmeFile)); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.email", "dev@example.com"},
+		{"config", "user.name", "Dev"},
+	} {
+		if _, err := git(work, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A genuine root commit whose message is not the placeholder's, holding
+	// real content rather than a lone README.
+	if err := os.WriteFile(filepath.Join(work, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(work, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(work, "commit", "--quiet", "-m", "start the real project"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(work, "push", "--quiet", "--force", "origin", "fresh:main"); err != nil {
+		t.Fatal(err)
+	}
+	realTip, err := git(work, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sanity: it really is a single parentless commit, so only the
+	// placeholder's fingerprint can be telling it apart.
+	if n, err := git(work, "rev-list", "--count", "HEAD"); err != nil || strings.TrimSpace(n) != "1" {
+		t.Fatalf("setup: want a single commit, got %q (%v)", n, err)
+	}
+
+	dir := newRepoWithCommit(t)
+	if _, err := git(dir, "remote", "add", "try", remote); err != nil {
+		t.Fatal(err)
+	}
+	if err := Push(dir, "try", "main", false); err == nil {
+		t.Fatal("setup: the plain push should be rejected by the lookalike commit")
+	}
+	replaced, err := PushReconcilingSeed(dir, "try", "main", false)
+	if err == nil {
+		t.Fatal("a lookalike root commit must not be treated as a replaceable placeholder")
+	}
+	if replaced {
+		t.Error("must not claim to have replaced a commit that is not the placeholder")
+	}
+	after, err := git(remote, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != realTip {
+		t.Errorf("remote tip moved to %s, want %s: real work was overwritten", after, realTip)
+	}
+}
+
+// The placeholder's fingerprint must be required in full: a root commit that
+// merely shares the subject, or that adds more than a README, is real work.
+func TestPushReconcilingSeedRefusesPlaceholderLookalikes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		subject string
+		file    string
+	}{
+		{"matching subject but real content", seedCommitSubject, "main.go"},
+		{"README but a different subject", "first real commit", seedReadmeFile},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remote := t.TempDir()
+			if _, err := git(remote, "init", "--bare", "--quiet", "-b", "main"); err != nil {
+				t.Fatal(err)
+			}
+			work := t.TempDir()
+			for _, args := range [][]string{
+				{"init", "--quiet", "-b", "main"},
+				{"config", "user.email", "dev@example.com"},
+				{"config", "user.name", "Dev"},
+			} {
+				if _, err := git(work, args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(work, tc.file), []byte("content\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := git(work, "add", "-A"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := git(work, "commit", "--quiet", "-m", tc.subject); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := git(work, "remote", "add", "origin", remote); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := git(work, "push", "--quiet", "origin", "main"); err != nil {
+				t.Fatal(err)
+			}
+			tip, err := git(work, "rev-parse", "HEAD")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			dir := newRepoWithCommit(t)
+			if _, err := git(dir, "remote", "add", "try", remote); err != nil {
+				t.Fatal(err)
+			}
+			if replaced, err := PushReconcilingSeed(dir, "try", "main", false); err == nil || replaced {
+				t.Errorf("PushReconcilingSeed accepted a lookalike (replaced=%v, err=%v)", replaced, err)
+			}
+			after, err := git(remote, "rev-parse", "refs/heads/main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after != tip {
+				t.Errorf("remote tip moved to %s, want %s", after, tip)
+			}
+		})
 	}
 }
 
