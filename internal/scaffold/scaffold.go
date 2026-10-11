@@ -250,6 +250,15 @@ func Push(dir, remote, branch string, setUpstream bool) error {
 	return err
 }
 
+// The seed a platform creates for an untouched repository: one root commit,
+// titled "Initial commit", whose whole content is a README.md. Both details
+// were confirmed against the live Trylle API and are checked before any force
+// push, so that fth only ever replaces a commit it is certain is a placeholder.
+const (
+	seedCommitSubject = "Initial commit"
+	seedReadmeFile    = "README.md"
+)
+
 // PushReconcilingSeed pushes like Push, but tolerates a remote branch that
 // already holds the placeholder commit a backend seeded at creation time.
 //
@@ -314,19 +323,22 @@ func isNonFastForward(err error) bool {
 // exactly one commit and that commit has no parents, which is the shape of the
 // placeholder a host creates for an empty repository.
 //
-// Requiring no parents is what keeps this safe: a real repository always has
-// ancestry, so only a genuine placeholder qualifies. The check runs against a
-// throwaway ref that is deleted afterwards, so the user's own refs and
-// remote-tracking branches are untouched.
+// Being a root commit is necessary but not sufficient: a rewritten branch, or a
+// repository someone initialised by hand, also has exactly one parentless
+// commit, and force-pushing over it would destroy real work. So the commit must
+// also match the shape the platform actually produces — the subject
+// "Initial commit" and a tree holding nothing but README.md, both verified
+// against the live Trylle API. Anything else is treated as real history.
+//
+// The remote branch is inspected via FETCH_HEAD, which git maintains itself,
+// so fth neither creates a ref in the caller's namespace nor risks clobbering
+// one that already belongs to them.
 func loneSeedCommit(dir, remote, branch string) (string, bool) {
-	probe := "refs/fth/seed-probe"
-	if _, err := git(dir, "fetch", "--quiet", remote, "+"+remoteRef(remote, branch)+":"+probe); err != nil {
+	if _, err := git(dir, "fetch", "--quiet", "--no-tags", remote, remoteRef(remote, branch)); err != nil {
 		return "", false
 	}
-	defer func() {
-		_, _ = git(dir, "update-ref", "-d", probe)
-	}()
-	out, err := git(dir, "rev-parse", probe)
+	const probe = "FETCH_HEAD"
+	out, err := git(dir, "rev-parse", "--verify", probe+"^{commit}")
 	if err != nil || strings.TrimSpace(out) == "" {
 		return "", false
 	}
@@ -343,5 +355,32 @@ func loneSeedCommit(dir, remote, branch string) (string, bool) {
 	if len(strings.Fields(parents)) != 1 {
 		return "", false
 	}
+	_, isSeed := looksLikeSeedCommit(dir, probe)
+	if !isSeed {
+		return "", false
+	}
 	return sha, true
+}
+
+// looksLikeSeedCommit reports whether the commit at ref is the placeholder a
+// platform creates for a repository nobody has pushed to yet.
+//
+// Trylle's is titled "Initial commit" and contains exactly one file,
+// README.md. Requiring both means a user's own lone commit — even one that
+// happens to be a root commit, and even one that happens to add a README —
+// is not mistaken for a placeholder and silently overwritten.
+func looksLikeSeedCommit(dir, ref string) (string, bool) {
+	subject, err := git(dir, "log", "-1", "--format=%s", ref)
+	if err != nil || strings.TrimSpace(subject) != seedCommitSubject {
+		return "", false
+	}
+	files, err := git(dir, "ls-tree", "-r", "--name-only", ref)
+	if err != nil {
+		return "", false
+	}
+	entries := strings.Fields(files)
+	if len(entries) != 1 || entries[0] != seedReadmeFile {
+		return "", false
+	}
+	return subject, true
 }

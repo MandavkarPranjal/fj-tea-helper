@@ -424,7 +424,7 @@ goes through the same credential scrubber as every other backend's.
 
 ```sh
 npm i -g @trylle/trylle-cli
-try auth login          # paste a CLI Key from https://trylle.com/settings/cli
+trylle-cli auth login  # paste a CLI Key from https://trylle.com/settings/cli
 ```
 
 The package installs **two** executables, `try` and `trylle-cli`, and `fth`
@@ -478,8 +478,13 @@ scrubber as every other backend's.
   even in JSON form, which makes this a live concern rather than a precaution.
 - **Remotes are never repointed.** If the chosen remote name already exists with
   a different URL, `fth` stops with an error instead of rewriting your remote.
-- **Pushes are never forced.** A non-fast-forward push fails with git's own
-  error rather than overwriting history on the server.
+- **Real remote history is never overwritten.** A non-fast-forward push fails
+  with git's own error rather than clobbering history on the server. There is
+  exactly one guarded exception: Trylle seeds every new repository with a
+  placeholder commit, so `fth` replaces that single parentless commit with a
+  `--force-with-lease`. The lease is what makes it safe — the replacement only
+  happens while the remote branch still holds exactly that one placeholder
+  commit, and it aborts the moment anything else is there.
 - **`-license` writes the canonical SPDX text** from
   [`license-list-data`](https://github.com/spdx/license-list-data), with the
   year and copyright holder substituted.

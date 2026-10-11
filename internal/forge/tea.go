@@ -187,8 +187,12 @@ func parseTeaRepo(out string, req CreateRequest) (*Repo, error) {
 // a remote before it creates anything. It is only ever used to fill gaps left
 // by the backend's own output, so it is never treated as authoritative.
 //
-// It assumes every clone URL lives on the instance's host, which holds for
-// every backend except Trylle; see Trylle's own derivation.
+// Both URLs are derived from the instance host: SSH from that host, HTTPS from
+// the same host under the web path. That is a generic guess, not a fact — a
+// self-hosted forge may serve its SSH remote on a different host than its
+// instance URL, as tea's own ssh_host field shows. Any backend whose clone URLs
+// do not follow that layout therefore implements Previewer and supplies its own
+// derivation instead of using this one.
 func PreviewURLs(login, owner, name string) (sshURL, httpsURL string) {
 	r := repoFromParts(CreateRequest{Login: login, Owner: owner, Name: name})
 	return r.SSHURL, r.CloneURL

@@ -36,7 +36,14 @@ type tryBackend struct {
 
 func (tryBackend) Tool() Tool { return ToolTry }
 
-func (tryBackend) LoginHint() string { return "try auth login" }
+// LoginHint names `trylle-cli`, never the bare `try`. The npm package
+// @trylle/trylle-cli installs two executables, `try` and `trylle-cli`, and `try`
+// is very often an unrelated program on a real machine (e.g. an "ephemeral
+// workspace manager" at version 1.10.1). fth deliberately refuses to trust a
+// bare `try` on PATH — see isTrylleCLI — so telling the user to run
+// `try auth login` could invoke that other program. `trylle-cli` is
+// unambiguous.
+func (tryBackend) LoginHint() string { return "trylle-cli auth login" }
 
 // SeedsInitialCommit reports that Trylle always seeds a repository with a
 // single "Initial commit" README. Verified against the live API: creating a

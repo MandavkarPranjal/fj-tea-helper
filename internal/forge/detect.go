@@ -264,7 +264,13 @@ func loginHint(t Tool) string {
 	case ToolGh:
 		return "gh auth login"
 	case ToolTry:
-		return "try auth login"
+		// The npm package @trylle/trylle-cli installs two executables, `try`
+		// and `trylle-cli`, and on real machines `try` is very often an
+		// unrelated program (e.g. an "ephemeral workspace manager" at 1.10.1).
+		// fth refuses to trust a bare `try` on PATH for exactly that reason
+		// (see isTrylleCLI in try.go), so pointing the user at `try` could
+		// invoke the wrong program. `trylle-cli` is the unambiguous name.
+		return "trylle-cli auth login"
 	}
 	return fmt.Sprintf("%s login", t)
 }
