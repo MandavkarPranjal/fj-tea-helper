@@ -4,9 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 )
+
+// defaultGhHost is the host gh assumes when none is given, and the one fth
+// names explicitly whenever a request does not specify a host of its own.
+const defaultGhHost = "github.com"
 
 // ghInstallHint is shown when the binary is absent.
 const ghInstallHint = "install it from https://cli.github.com " +
@@ -153,7 +158,11 @@ func ghHostOrder(hosts map[string][]ghAccount) []string {
 
 func (b ghBackend) auth(ctx context.Context) (ghAuthJSON, error) {
 	var raw ghAuthJSON
-	out, err := run(ctx, minEnv(), "gh", "auth", "status", "--json", "hosts")
+	// ghEnv rather than minEnv: an ambient GH_HOST makes gh invent an entry for
+	// that host, which would surface as a login fth did not find configured.
+	// Pinning it does not hide anything — `gh auth status` lists every
+	// authenticated host whatever GH_HOST says — so discovery stays complete.
+	out, err := run(ctx, ghEnv(""), "gh", "auth", "status", "--json", "hosts")
 	if err != nil {
 		return raw, wrapAuthError(ToolGh, "", err)
 	}
@@ -222,7 +231,11 @@ func (b ghBackend) CreateRepo(ctx context.Context, req CreateRequest) (*Repo, er
 
 	out, err := run(ctx, ghEnv(req.Login), "gh", args...)
 	if err != nil {
-		wrapped := wrapAuthError(ToolGh, hostOfLogin(req), err)
+		// The login is passed directly rather than through hostOfLogin, whose
+		// owner fallback exists for cafe. For gh an absent login means
+		// github.com, and authHint resolves that on its own; falling back to
+		// the owner would suggest "gh auth login --hostname <account>".
+		wrapped := wrapAuthError(ToolGh, bareHost(req.Login), err)
 		if hint := ghCreateHint(out); hint != "" {
 			wrapped = fmt.Errorf("%w\n%s", wrapped, hint)
 		}
@@ -297,15 +310,31 @@ func ghCreateHint(out string) string {
 
 // ghEnv returns the environment a `gh` invocation needs to target a host.
 //
-// gh takes the host from GH_HOST rather than a flag, and assumes github.com
-// when it is unset, so Enterprise hosts have to be named explicitly. The rest
-// of the environment is kept as-is apart from the colour variables run already
-// strips for parsing.
+// gh takes the host from GH_HOST rather than a flag, and treats it as a
+// definitive override, so an inherited GH_HOST must never be able to send a
+// command somewhere fth did not choose. Enterprise users routinely have
+// GH_HOST set for other tools' benefit, and with it in place a github.com
+// target would silently create on Enterprise — the exact wrong-host outcome
+// this backend exists to prevent.
+//
+// So the inherited value is stripped and GH_HOST is always set explicitly,
+// github.com included. Setting it for the default host as well as appending
+// rather than replacing avoids a second failure mode: a duplicate GH_HOST in
+// the environment leaves which value the child sees up to the C library's
+// getenv, which is not something to leave to chance.
 func ghEnv(host string) []string {
-	env := minEnv()
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, kv := range minEnv() {
+		// Compare on the key alone so an inherited GH_HOST is removed whether
+		// it is spelled "GH_HOST" or "gh_host".
+		if key, _, ok := strings.Cut(kv, "="); ok && strings.EqualFold(key, "GH_HOST") {
+			continue
+		}
+		env = append(env, kv)
+	}
 	h := bareHost(host)
-	if h == "" || strings.EqualFold(h, "github.com") {
-		return env
+	if h == "" {
+		h = defaultGhHost
 	}
 	return append(env, "GH_HOST="+h)
 }

@@ -248,6 +248,89 @@ exit 1
 	}
 }
 
+// gh treats GH_HOST as a definitive override, so an inherited value must never
+// decide the host for a command fth targets explicitly. This is a real
+// configuration: Enterprise users set GH_HOST routinely.
+func TestGhEnvDiscardsInheritedHost(t *testing.T) {
+	t.Setenv("GH_HOST", "ghe.example.com")
+
+	// A github.com target must not inherit the Enterprise host, or the create
+	// would silently land on the wrong instance.
+	got := envValue(ghEnv("github.com"), "GH_HOST")
+	if got != "github.com" {
+		t.Errorf("GH_HOST = %q, want github.com", got)
+	}
+	// An explicit Enterprise target still wins.
+	if got := envValue(ghEnv("ghe.example.com"), "GH_HOST"); got != "ghe.example.com" {
+		t.Errorf("GH_HOST = %q, want ghe.example.com", got)
+	}
+	// No login means github.com, which is gh's own default.
+	if got := envValue(ghEnv(""), "GH_HOST"); got != "github.com" {
+		t.Errorf("GH_HOST = %q, want github.com for an omitted host", got)
+	}
+}
+
+// Appending to an inherited GH_HOST leaves a duplicate key, and which value the
+// child process sees then depends on its getenv implementation.
+func TestGhEnvNeverDuplicatesHostKey(t *testing.T) {
+	t.Setenv("GH_HOST", "ghe.example.com")
+	for _, host := range []string{"", "github.com", "ghe.example.com"} {
+		env := ghEnv(host)
+		n := 0
+		for _, kv := range env {
+			if key, _, ok := strings.Cut(kv, "="); ok && strings.EqualFold(key, "GH_HOST") {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("ghEnv(%q) has %d GH_HOST entries, want exactly 1", host, n)
+		}
+	}
+}
+
+func envValue(env []string, key string) string {
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, key) {
+			return v
+		}
+	}
+	return ""
+}
+
+// An omitted login means github.com for gh, and an explicit Enterprise host is
+// still named. authHint is handed a bare host string: deciding that a string is
+// an account rather than a host is the caller's job, so the owner-as-host case
+// is covered by the CreateRepo test below rather than here.
+func TestGhAuthHintHost(t *testing.T) {
+	if got := authHint(ToolGh, ""); got != "Authenticate with: gh auth login" {
+		t.Errorf("hint for an omitted host = %q, want the plain login command", got)
+	}
+	if got := authHint(ToolGh, "github.com"); got != "Authenticate with: gh auth login" {
+		t.Errorf("hint for github.com = %q, want no --hostname", got)
+	}
+	if got := authHint(ToolGh, "ghe.example.com"); !strings.Contains(got, "--hostname ghe.example.com") {
+		t.Errorf("hint = %q, want it to name the Enterprise host", got)
+	}
+}
+
+func TestGhCreateRepoAuthFailureDoesNotNameTheOwner(t *testing.T) {
+	writeStubGh(t, `#!/bin/sh
+echo "To get started with GitHub CLI, please run:  gh auth login" >&2
+exit 1
+`)
+	// Owner is set but Login is not, which is the case that used to produce
+	// "gh auth login --hostname octocat".
+	_, err := ghBackend{}.CreateRepo(context.Background(), CreateRequest{
+		Owner: "octocat", Name: "demo",
+	})
+	if err == nil {
+		t.Fatal("expected a failure")
+	}
+	if strings.Contains(err.Error(), "--hostname octocat") {
+		t.Errorf("error suggests the owner as a hostname: %v", err)
+	}
+}
+
 func TestGhCreateHint(t *testing.T) {
 	if got := ghCreateHint(""); got != "" {
 		t.Errorf("empty output should produce no hint, got %q", got)

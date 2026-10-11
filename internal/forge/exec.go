@@ -181,9 +181,12 @@ func authHint(tool Tool, host string) string {
 		return fmt.Sprintf("Authenticate with: cafe auth login --host https://%s/api", host)
 	}
 	if tool == ToolGh {
-		// gh defaults to github.com, so the flag is only worth showing for an
-		// Enterprise host the user could otherwise never reach.
-		if h := bareHost(host); h != "" && !strings.EqualFold(h, "github.com") {
+		// gh defaults to github.com, so --hostname is only worth showing for
+		// an Enterprise host the user could otherwise never reach. An empty
+		// host means the request named none, which for gh is github.com — it
+		// must not fall back to a repository owner, since an account name is
+		// not a hostname and "gh auth login --hostname octocat" is nonsense.
+		if h := bareHost(host); h != "" && !strings.EqualFold(h, defaultGhHost) {
 			return fmt.Sprintf("Authenticate with: gh auth login --hostname %s", h)
 		}
 		return "Authenticate with: gh auth login"
@@ -235,6 +238,10 @@ func wrapAuthError(tool Tool, host string, err error) error {
 
 // hostOfLogin is the bare host a CreateRequest targets, with any scheme or
 // path stripped. Used for auth hints.
+//
+// A missing login falls back to the owner, which is right for cafe: its owner
+// flag doubles as the API host. It is wrong for gh, where the owner is an
+// account name and never a hostname, so gh passes its host explicitly instead.
 func hostOfLogin(req CreateRequest) string {
 	h := req.Login
 	if h == "" {
