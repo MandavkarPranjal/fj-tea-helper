@@ -249,3 +249,99 @@ func Push(dir, remote, branch string, setUpstream bool) error {
 	_, err := git(dir, args...)
 	return err
 }
+
+// PushReconcilingSeed pushes like Push, but tolerates a remote branch that
+// already holds the placeholder commit a backend seeded at creation time.
+//
+// Some hosts (Trylle) always create the repository with a single "Initial
+// commit" README, so the first push of an unrelated local history is rejected
+// as non-fast-forward even though nothing real is at stake. When the remote
+// branch turns out to hold exactly that lone commit, the push is retried as a
+// force push guarded by --force-with-lease, which makes it succeed only if the
+// remote is still at the commit we inspected. Anything richer than the seed is
+// left alone and reported as the ordinary push failure, so real work is never
+// overwritten.
+//
+// The returned bool reports whether the placeholder was replaced.
+func PushReconcilingSeed(dir, remote, branch string, setUpstream bool) (bool, error) {
+	if remote == "" {
+		remote = "origin"
+	}
+	if branch == "" {
+		branch = "main"
+	}
+	err := Push(dir, remote, branch, setUpstream)
+	if err == nil {
+		return false, nil
+	}
+	// Only a rejection caused by a pre-existing remote commit is worth
+	// retrying; anything else (auth, bad URL) must surface unchanged.
+	if !isNonFastForward(err) {
+		return false, err
+	}
+	seed, ok := loneSeedCommit(dir, remote, branch)
+	if !ok {
+		return false, err
+	}
+	args := []string{"push", "--force-with-lease=" + remoteRef(remote, branch) + ":" + seed}
+	if setUpstream {
+		args = append(args, "--set-upstream")
+	}
+	args = append(args, remote, branch)
+	if _, ferr := git(dir, args...); ferr != nil {
+		return false, fmt.Errorf("push: %w", ferr)
+	}
+	return true, nil
+}
+
+// remoteRef is the fully qualified remote-tracking ref for a branch.
+func remoteRef(remote, branch string) string {
+	return "refs/heads/" + branch
+}
+
+// isNonFastForward reports whether err is git refusing to clobber remote work.
+func isNonFastForward(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "fetch first") ||
+		strings.Contains(msg, "non-fast-forward") ||
+		strings.Contains(msg, "rejected")
+}
+
+// loneSeedCommit returns the SHA of the remote branch when that branch holds
+// exactly one commit and that commit has no parents, which is the shape of the
+// placeholder a host creates for an empty repository.
+//
+// Requiring no parents is what keeps this safe: a real repository always has
+// ancestry, so only a genuine placeholder qualifies. The check runs against a
+// throwaway ref that is deleted afterwards, so the user's own refs and
+// remote-tracking branches are untouched.
+func loneSeedCommit(dir, remote, branch string) (string, bool) {
+	probe := "refs/fth/seed-probe"
+	if _, err := git(dir, "fetch", "--quiet", remote, "+"+remoteRef(remote, branch)+":"+probe); err != nil {
+		return "", false
+	}
+	defer func() {
+		_, _ = git(dir, "update-ref", "-d", probe)
+	}()
+	out, err := git(dir, "rev-parse", probe)
+	if err != nil || strings.TrimSpace(out) == "" {
+		return "", false
+	}
+	sha := strings.TrimSpace(out)
+	// More than one commit means there is real history to protect.
+	if n, err := git(dir, "rev-list", "--count", probe); err != nil || strings.TrimSpace(n) != "1" {
+		return "", false
+	}
+	// A parent means this is an ordinary history, not a placeholder.
+	parents, err := git(dir, "rev-list", "--parents", "-n", "1", probe)
+	if err != nil {
+		return "", false
+	}
+	if len(strings.Fields(parents)) != 1 {
+		return "", false
+	}
+	return sha, true
+}

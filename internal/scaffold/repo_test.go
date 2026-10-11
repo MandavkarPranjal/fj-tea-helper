@@ -229,6 +229,170 @@ func TestPushWithoutUpstreamLeavesTrackingAlone(t *testing.T) {
 	}
 }
 
+// seededRemote builds a bare remote whose branch holds only a lone root commit,
+// the shape every host creates for a fresh repository. It returns the remote
+// path and the seed commit's SHA.
+func seededRemote(t *testing.T) (dir, sha string) {
+	t.Helper()
+	dir = t.TempDir()
+	if _, err := git(dir, "init", "--bare", "--quiet"); err != nil {
+		t.Fatal(err)
+	}
+	// Seed it the way a host does: a single README commit on a branch that
+	// shares no history with the local repository.
+	work := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "--quiet", "-b", "main"},
+		{"config", "user.email", "host@example.com"},
+		{"config", "user.name", "Host"},
+	} {
+		if _, err := git(work, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("# name\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(work, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(work, "commit", "--quiet", "-m", "Initial commit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(work, "remote", "add", "origin", dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(work, "push", "--quiet", "origin", "main"); err != nil {
+		t.Fatal(err)
+	}
+	sha, err := git(work, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, sha
+}
+
+func TestPushReconcilingSeedReplacesPlaceholder(t *testing.T) {
+	// The real-world failure: the host seeded an "Initial commit", so a plain
+	// push is rejected as non-fast-forward even though nothing real is there.
+	remote, seed := seededRemote(t)
+	dir := newRepoWithCommit(t)
+	if _, err := git(dir, "remote", "add", "try", remote); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Push(dir, "try", "main", true); err == nil {
+		t.Fatal("plain push should be rejected by the placeholder commit")
+	}
+
+	replaced, err := PushReconcilingSeed(dir, "try", "main", true)
+	if err != nil {
+		t.Fatalf("PushReconcilingSeed: %v", err)
+	}
+	if !replaced {
+		t.Error("expected the placeholder to be reported as replaced")
+	}
+	// The local history must be what landed, not the README.
+	head, err := git(dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := git(remote, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != head {
+		t.Errorf("remote tip = %s, want local %s (seed was %s)", got, head, seed)
+	}
+}
+
+func TestPushReconcilingSeedRefusesRealHistory(t *testing.T) {
+	// A remote with actual commits must never be overwritten, however many
+	// there are. This is the guard that keeps the seed handling from becoming
+	// a data-loss bug.
+	remote, _ := seededRemote(t)
+	// Add a second, unrelated commit on the remote.
+	work := t.TempDir()
+	if _, err := git(work, "clone", "--quiet", remote, "."); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.email", "dev@example.com"},
+		{"config", "user.name", "Dev"},
+	} {
+		if _, err := git(work, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(work, "work.txt"), []byte("real work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(work, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(work, "commit", "--quiet", "-m", "real work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(work, "push", "--quiet", "origin", "main"); err != nil {
+		t.Fatal(err)
+	}
+	realTip, err := git(work, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dir := newRepoWithCommit(t)
+	if _, err := git(dir, "remote", "add", "try", remote); err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := PushReconcilingSeed(dir, "try", "main", false)
+	if err == nil {
+		t.Fatal("expected an error: real remote history must not be overwritten")
+	}
+	if replaced {
+		t.Error("must not report replacing a seed when the remote holds real history")
+	}
+	after, err := git(remote, "rev-parse", "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != realTip {
+		t.Errorf("remote tip moved to %s, want %s: real work was overwritten", after, realTip)
+	}
+}
+
+func TestPushReconcilingSeedLeavesCleanRemoteAlone(t *testing.T) {
+	// The overwhelmingly common case: nothing on the remote. The push should
+	// just work and not claim it replaced anything.
+	remote := t.TempDir()
+	if _, err := git(remote, "init", "--bare", "--quiet"); err != nil {
+		t.Fatal(err)
+	}
+	dir := newRepoWithCommit(t)
+	if _, err := git(dir, "remote", "add", "try", remote); err != nil {
+		t.Fatal(err)
+	}
+	replaced, err := PushReconcilingSeed(dir, "try", "main", true)
+	if err != nil {
+		t.Fatalf("PushReconcilingSeed: %v", err)
+	}
+	if replaced {
+		t.Error("nothing should have been replaced on an empty remote")
+	}
+}
+
+func TestPushReconcilingSeedIgnoresUnrelatedFailures(t *testing.T) {
+	// An unreachable remote must surface its own error rather than being
+	// mistaken for a fast-forward rejection.
+	dir := newRepoWithCommit(t)
+	if _, err := git(dir, "remote", "add", "try", t.TempDir()+"/missing.git"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PushReconcilingSeed(dir, "try", "main", false); err == nil {
+		t.Fatal("expected the push to fail against a missing remote")
+	}
+}
+
 func TestSuggestRemoteName(t *testing.T) {
 	taken := func(names ...string) func(string) bool {
 		return func(n string) bool {

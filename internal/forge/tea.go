@@ -186,6 +186,9 @@ func parseTeaRepo(out string, req CreateRequest) (*Repo, error) {
 // not exist yet, so fth can show the user exactly what each option would add as
 // a remote before it creates anything. It is only ever used to fill gaps left
 // by the backend's own output, so it is never treated as authoritative.
+//
+// It assumes every clone URL lives on the instance's host, which holds for
+// every backend except Trylle; see Trylle's own derivation.
 func PreviewURLs(login, owner, name string) (sshURL, httpsURL string) {
 	r := repoFromParts(CreateRequest{Login: login, Owner: owner, Name: name})
 	return r.SSHURL, r.CloneURL

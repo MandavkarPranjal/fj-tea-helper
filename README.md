@@ -1,7 +1,8 @@
 # fth
 
-**fth** (*fj-tea-helper*) creates a new repository on Forgejo, Gitea, GitCafe or
-GitHub in one command, using the `fj`, `tea`, `cafe` or `gh` CLI as the engine.
+**fth** (*fj-tea-helper*) creates a new repository on Forgejo, Gitea, GitCafe,
+GitHub or Trylle in one command, using the `fj`, `tea`, `cafe`, `gh` or `try`
+CLI as the engine.
 
 It detects which CLI you're authenticated against, creates the remote
 repository, scaffolds a local git repository with `README.md`, `.gitignore` and
@@ -39,8 +40,8 @@ mise tasks              # list all tasks
 ```
 
 `mise.toml` pins Go 1.27 and golangci-lint, so no manual toolchain setup is
-needed. At runtime the binary shells out to whichever of `fj`, `tea`, `cafe` or
-`gh` you have authenticated. `git` must be on `PATH`.
+needed. At runtime the binary shells out to whichever of `fj`, `tea`, `cafe`,
+`gh` or `try` you have authenticated. `git` must be on `PATH`.
 
 ## Usage
 
@@ -57,8 +58,9 @@ Flags may appear before or after the name, so `fth myproject -private` and
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `-tool` | `auto` | Backend CLI: `auto`, `tea`, `fj`, `cafe`, or `gh`; narrows the instance picker |
+| `-tool` | `auto` | Backend CLI: `auto`, `tea`, `fj`, `cafe`, `gh`, or `try`; narrows the instance picker |
 | `-cafe-bin` | `cafe` on PATH | Explicit path to the `cafe` binary |
+| `-try-bin` | `trylle-cli` on PATH | Explicit path to the Trylle binary (`trylle-cli` or `try`) |
 | `-host` | detected | Instance host, e.g. `gitea.com` or `github.com`; narrows the instance picker |
 | `-owner` | your account | Repository owner or organisation |
 | `-description` | – | Short repository description |
@@ -104,6 +106,9 @@ fth -tool gh -license MIT -lang go myservice
 
 # Private repo on a GitHub Enterprise Server instance
 fth -tool gh -host ghe.example.com -visibility private -owner myorg myservice
+
+# Public repo on Trylle
+fth -tool try -license MIT -lang go myservice
 
 # Create the repo and local dir, but decide about pushing later
 fth -no-push myservice
@@ -262,7 +267,7 @@ Plan
 
 ## Backend detection
 
-fth probes all four CLIs and then asks **which instance to create on**:
+fth probes every installed CLI and then asks **which instance to create on**:
 
 ```console
 $ fth myproject
@@ -271,6 +276,7 @@ Create the repository on
     tea   gitea.com     MandavkarPranjal
     cafe  git.cafe      mandavkarpranjal
     gh    github.com    MandavkarPranjal
+    try   trylle.com    mandavkarpranjal
   (up/down or j/k to move, enter to choose)
 Create the repository on: fj    codeberg.org
 ```
@@ -284,18 +290,20 @@ the first letter of a row to jump straight to it, Enter to choose.
 How the list is built:
 
 1. Run `fj auth list` / `tea logins list -o json` / `cafe auth status --json` /
-   `gh auth status --json hosts` to find configured logins.
+   `gh auth status --json hosts` / `try auth status --json` to find configured
+   logins.
 2. Confirm each login actually works — for `fj` this means `fj whoami`, because
    `fj auth list` happily reports instances whose stored OAuth grant has been
    revoked. A login that fails is left out of the list rather than offered and
    then failing later.
-3. Order the results by tool (`fj`, then `tea`, `cafe`, `gh`), and within each
-   tool put the CLI's own default login first. That first row is the one Enter
-   accepts, so pressing Enter twice always does something sensible.
+3. Order the results by tool (`fj`, then `tea`, `cafe`, `gh`, `try`), and within
+   each tool put the CLI's own default login first. That first row is the one
+   Enter accepts, so pressing Enter twice always does something sensible.
 
-`gh` is probed **last** deliberately. It is by far the most likely of the four
-to be installed, and putting it first would quietly change what Enter picks for
-someone who came to work on their Forgejo or Gitea host.
+`gh` and `try` are probed **last** deliberately. `gh` is by far the most likely
+of these to be installed, and `try` is a name other programs also answer to, so
+putting either first would quietly change what Enter picks for someone who came
+to work on their Forgejo or Gitea host.
 
 `-tool` and `-host` narrow the list before it is shown, and are what you want in
 a script:
@@ -328,6 +336,8 @@ Backends
         ✓ git.cafe                user=mandavkarpranjal
   gh   gh 2.100.0
         ✓ github.com             user=MandavkarPranjal
+  try  try 1.2.0
+        ✓ trylle.com             user=mandavkarpranjal
 ```
 
 A backend that is missing is reported with how to install it:
@@ -335,6 +345,7 @@ A backend that is missing is reported with how to install it:
 ```console
   cafe not installed on PATH; install it with: bun install -g @gitcafe/cli
   gh not installed on PATH; install it from https://cli.github.com
+  try not installed on PATH; install it with: npm i -g @trylle/trylle-cli
 ```
 
 ### GitCafe
@@ -406,6 +417,47 @@ Three things behave differently from the Forgejo backends:
 Because `gh auth status` can print a live token (`--show-token`), its output
 goes through the same credential scrubber as every other backend's.
 
+### Trylle
+
+`try` ([trylle.com](https://trylle.com)) ships as the npm package
+`@trylle/trylle-cli` (also on PyPI as `trylle-cli`):
+
+```sh
+npm i -g @trylle/trylle-cli
+try auth login          # paste a CLI Key from https://trylle.com/settings/cli
+```
+
+The package installs **two** executables, `try` and `trylle-cli`, and `fth`
+prefers `trylle-cli`.
+
+- **`try` is not a distinctive name.** An unrelated workspace manager ships a
+  program by that name, and on a machine that has it, `try --version` answers
+  `try v1.10.1 - ephemeral workspace manager`. `fth` checks the identity of a
+  binary it found under the short name before driving it, and reports the
+  collision rather than relaying that program's errors as if they were yours.
+  `-try-bin` points `fth` at a specific binary if you need to be explicit.
+- **One credential, one instance.** Unlike `gh` there is no list of hosts to
+  enumerate: the CLI holds a single API key pointed at a single endpoint, which
+  is `trylle.com` unless a self-hosted deployment saved its own. The instance
+  name comes from the web URL the CLI reports, so `-host` works for either.
+- **The two clone URLs are on different hosts.** The web app and the SSH remote
+  live on `trylle.com`, but HTTPS clone URLs are served from the API host
+  (`https://api.trylle.com/git/OWNER/NAME.git`). `fth` derives each from the
+  right one, so both the preview and the remote it writes actually resolve.
+- **`--auto-init` is never passed.** It would create a server-side commit that
+  collides with the one `fth` pushes from the local scaffold, so
+  `README`/`.gitignore`/`LICENSE` are written locally, like every non-tea path.
+- **Every new repository starts with a placeholder commit.** Trylle seeds an
+  `Initial commit` README regardless of `--auto-init`, so the first push of an
+  unrelated local history is rejected as non-fast-forward. `fth` notices that
+  the remote branch holds exactly one parentless commit and replaces it,
+  reporting `replaced the placeholder commit try created`. A branch holding
+  real history is never overwritten — the push fails as usual and tells you to
+  pull first.
+
+`try auth token` can print the credential, so its output goes through the same
+scrubber as every other backend's.
+
 ## Behaviour notes
 
 - **Nothing is created if the local directory is unusable.** The destination is
@@ -413,10 +465,11 @@ goes through the same credential scrubber as every other backend's.
   leave an orphan repo on your server. An existing git repository *is* usable —
   see [Publishing an existing git repository](#publishing-an-existing-git-repository).
 - **Templates are generated locally, not by the server.** `tea` can seed
-  `.gitignore`/`LICENSE`/`README` server-side, but `fj`, `cafe` and `gh` cannot
-  do so without creating a commit that would clash with the one being pushed, so
+  `.gitignore`/`LICENSE`/`README` server-side, but `fj`, `cafe`, `gh` and `try`
+  cannot do so without creating a commit that would clash with the one being
+  pushed, so
   every path behaves the same: the helper writes the files and pushes them.
-- **Backend commands run from a scratch directory.** All four CLIs can infer a
+- **Backend commands run from a scratch directory.** Every backend CLI can infer a
   repository from `$PWD`; running them from a neutral directory stops an
   unrelated local checkout from leaking into the operation.
 - **Credentials are scrubbed from captured output.** `run` folds a command's
@@ -448,8 +501,9 @@ Layout:
 
 - `main.go` — CLI parsing, flags, orchestration
 - `mise.toml` — pinned toolchain (Go, golangci-lint) and task definitions
-- `internal/forge` — backend abstraction over `tea`, `fj`, `cafe` and `gh`
-  (`forge.go`, `tea.go`, `fj.go`, `cafe.go`, `gh.go`, `detect.go`, `exec.go`)
+- `internal/forge` — backend abstraction over `tea`, `fj`, `cafe`, `gh` and `try`
+  (`forge.go`, `tea.go`, `fj.go`, `cafe.go`, `gh.go`, `try.go`, `detect.go`,
+  `exec.go`)
 - `internal/scaffold` — local git repository creation and remote attach
   (`scaffold.go`, `repo.go`)
 - `internal/prompt` — Bubble Tea prompts: text input and single-choice selection

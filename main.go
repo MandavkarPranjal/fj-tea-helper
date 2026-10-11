@@ -26,6 +26,7 @@ type options struct {
 	name        string
 	tool        string
 	cafeBin     string
+	tryBin      string
 	host        string
 	owner       string
 	description string
@@ -125,8 +126,9 @@ func run(argv []string) error {
 	fs := flag.NewFlagSet("fth", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 
-	fs.StringVar(&o.tool, "tool", "auto", "backend CLI to use: auto, tea, fj, cafe, or gh")
+	fs.StringVar(&o.tool, "tool", "auto", "backend CLI to use: auto, tea, fj, cafe, gh, or try")
 	fs.StringVar(&o.cafeBin, "cafe-bin", "", "path to the cafe binary, if it is not on PATH")
+	fs.StringVar(&o.tryBin, "try-bin", "", "path to the Trylle binary (trylle-cli or try), if it is not on PATH")
 	fs.StringVar(&o.host, "host", "", "instance host to create on (e.g. gitea.com)")
 	fs.StringVar(&o.owner, "owner", "", "repository owner (default: your account)")
 	fs.StringVar(&o.description, "description", "", "short repository description")
@@ -210,14 +212,22 @@ func run(argv []string) error {
 	// Detection is needed for -list and for the real run. When the backend is
 	// named explicitly there is no need to probe the other CLI.
 	tools := forge.AllTools()
+	toolName := o.tool
 	if o.tool != "" && o.tool != "auto" {
-		tools = []forge.Tool{forge.Tool(o.tool)}
+		// Accept the names people actually type — `trylle`, `trylle-cli` — and
+		// reject a typo here rather than at the first command invocation.
+		t, err := forge.ParseTool(o.tool)
+		if err != nil {
+			return err
+		}
+		toolName, tools = string(t), []forge.Tool{t}
 	}
 	// Probing logins means a handful of network round-trips, so it is worth
 	// showing that something is happening rather than a blank screen.
 	spin := progress.New(os.Stderr)
 	spin.Start("detecting backend")
-	candidates, err := forge.Detect(ctx, tools, forge.WithCafeBin(o.cafeBin))
+	candidates, err := forge.Detect(ctx, tools,
+		forge.WithCafeBin(o.cafeBin), forge.WithTryBin(o.tryBin))
 	spin.Stop()
 	if err != nil {
 		return err
@@ -242,7 +252,7 @@ func run(argv []string) error {
 		ask = prompt.NonInteractive(os.Stderr)
 	}
 
-	targets, err := forge.Filter(candidates, forge.Targets(candidates), o.tool, o.host)
+	targets, err := forge.Filter(candidates, forge.Targets(candidates), toolName, o.host)
 	if err != nil {
 		return reportNoBackend(candidates, err)
 	}
@@ -291,7 +301,7 @@ func run(argv []string) error {
 	// SSH is the preferred remote, but the user gets to choose, so ask before
 	// anything is created. -url skips the question entirely. With -no-scaffold
 	// there is no local remote to wire up, so there is nothing to ask about.
-	scheme, previewURL, err := chooseScheme(ask, o.url, explicitURL, login.Name, owner, name, !o.noScaffold)
+	scheme, previewURL, err := chooseScheme(ask, o.url, explicitURL, target.Backend, login.Name, owner, name, !o.noScaffold)
 	if err != nil {
 		return err
 	}
@@ -467,10 +477,22 @@ func run(argv []string) error {
 	}
 	logf(o.verbose, "pushing to %s (set-upstream=%v)\n", res.RemoteName, setUpstream)
 	spin.Start("pushing " + res.Branch + " to " + res.RemoteName)
-	err = scaffold.Push(res.Dir, res.RemoteName, res.Branch, setUpstream)
+	// Trylle and friends always leave a placeholder commit on a new
+	// repository, so the plain push is rejected even for a brand new repo.
+	// PushReconcilingSeed recognises that case and replaces the placeholder,
+	// while still refusing to overwrite a branch that holds real history.
+	var replacedSeed bool
+	if forge.SeedsFor(target.Backend) {
+		replacedSeed, err = scaffold.PushReconcilingSeed(res.Dir, res.RemoteName, res.Branch, setUpstream)
+	} else {
+		err = scaffold.Push(res.Dir, res.RemoteName, res.Branch, setUpstream)
+	}
 	spin.Stop()
 	if err != nil {
 		return fmt.Errorf("push: %w", err)
+	}
+	if replacedSeed {
+		fmt.Println(ui.Dot("replaced the placeholder commit " + string(target.Backend.Tool()) + " created"))
 	}
 	if setUpstream {
 		fmt.Println(ui.Done("pushed " + res.Branch + " to " + res.RemoteName + " " + ui.Dim("(tracking "+res.RemoteName+")")))
@@ -556,7 +578,7 @@ func askForRemoteName(ask *prompt.Prompter, local *scaffold.LocalState, host, ta
 //
 // It returns the scheme and the URL it corresponds to, so the plan can show
 // exactly what the remote will point at.
-func chooseScheme(ask *prompt.Prompter, flagValue string, explicit bool, host, owner, name string, relevant bool) (scheme, remoteURL string, err error) {
+func chooseScheme(ask *prompt.Prompter, flagValue string, explicit bool, backend forge.Backend, host, owner, name string, relevant bool) (scheme, remoteURL string, err error) {
 	want := strings.ToLower(strings.TrimSpace(flagValue))
 	if want == "" {
 		want = "ssh"
@@ -564,7 +586,7 @@ func chooseScheme(ask *prompt.Prompter, flagValue string, explicit bool, host, o
 	if want != "ssh" && want != "https" {
 		return "", "", fmt.Errorf("unknown -url %q (want ssh or https)", flagValue)
 	}
-	sshURL, httpsURL := forge.PreviewURLs(host, owner, name)
+	sshURL, httpsURL := forge.PreviewFor(backend, host, owner, name)
 	url := sshURL
 	if want == "https" {
 		url = httpsURL
@@ -721,17 +743,17 @@ func logf(verbose bool, format string, args ...any) {
 }
 
 func usage(fs *flag.FlagSet) {
-	fmt.Fprintf(os.Stderr, `fth %s — create a repo on Forgejo, Gitea, GitCafe or GitHub
+	fmt.Fprintf(os.Stderr, `fth %s — create a repo on Forgejo, Gitea, GitCafe, GitHub or Trylle
 
 Usage:
   fth [flags] <name>
   fth [flags] <owner>/<name>
   fth -list
 
-It detects every 'fj' (Forgejo), 'tea' (Gitea), 'cafe' (GitCafe) and 'gh'
-(GitHub) login you have, asks which instance to create on, creates the remote
-repository, scaffolds a local git repo with README/.gitignore/LICENSE, adds the
-remote and pushes the initial commit.
+It detects every 'fj' (Forgejo), 'tea' (Gitea), 'cafe' (GitCafe), 'gh' (GitHub)
+and 'try' (Trylle) login you have, asks which instance to create on, creates the
+remote repository, scaffolds a local git repo with README/.gitignore/LICENSE,
+adds the remote and pushes the initial commit.
 
 Flags:
 `, version)
@@ -744,6 +766,7 @@ Examples:
   fth -tool cafe -cafe-bin ~/.bun/install/global/node_modules/@gitcafe/cli/bin/cafe.js myproject
   fth -tool gh -host github.com -license MIT myproject
   fth -tool gh -host ghe.example.com -visibility private myproject
+  fth -tool try -license MIT -lang go myproject
   fth -no-push -no-scaffold myproject
 `)
 	_ = time.Now

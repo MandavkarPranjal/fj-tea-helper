@@ -1,7 +1,7 @@
 // Package forge provides a thin, uniform wrapper over the `tea` (Gitea),
-// `fj` (Forgejo), `cafe` (GitCafe) and `gh` (GitHub) command line tools so a
-// caller can create a repository without caring which CLI is installed or how
-// its flags differ.
+// `fj` (Forgejo), `cafe` (GitCafe), `gh` (GitHub) and `try` (Trylle) command
+// line tools so a caller can create a repository without caring which CLI is
+// installed or how its flags differ.
 package forge
 
 import (
@@ -23,13 +23,47 @@ const (
 	ToolCafe Tool = "cafe"
 	// ToolGh is GitHub's own `gh` CLI.
 	ToolGh Tool = "gh"
+	// ToolTry is the Trylle CLI, installed as either `trylle-cli` or `try`.
+	ToolTry Tool = "try"
 )
 
 // AllTools lists every supported backend, in the order `-tool auto` probes
-// them. gh comes last so that its very wide reach — it is the most commonly
-// installed of the four — never quietly changes which instance Enter picks for
-// someone who came here to work on their Forgejo or Gitea host.
-func AllTools() []Tool { return []Tool{ToolFj, ToolTea, ToolCafe, ToolGh} }
+// them. gh and try come last so that their very wide reach — gh is by far the
+// most commonly installed of these, and `try` is a name other programs also
+// answer to — never quietly changes which instance Enter picks for someone who
+// came here to work on their Forgejo or Gitea host.
+func AllTools() []Tool { return []Tool{ToolFj, ToolTea, ToolCafe, ToolGh, ToolTry} }
+
+// toolAliases maps the alternative spellings a user is likely to type for
+// -tool onto the canonical tool identifier.
+//
+// Trylle needs this more than the others do: the CLI installs under two
+// different executable names (`trylle-cli` everywhere, `try` from npm and uv),
+// so both are what people reach for.
+var toolAliases = map[string]Tool{
+	"trylle":     ToolTry,
+	"trylle-cli": ToolTry,
+}
+
+// ParseTool resolves the value of -tool to a backend, accepting the canonical
+// names as well as the aliases people type for them. An empty string or "auto"
+// means "probe everything" and comes back unchanged, since that is not a tool.
+func ParseTool(s string) (Tool, error) {
+	key := strings.ToLower(strings.TrimSpace(s))
+	if key == "" || key == "auto" {
+		return Tool(key), nil
+	}
+	if alias, ok := toolAliases[key]; ok {
+		return alias, nil
+	}
+	t := Tool(key)
+	for _, known := range AllTools() {
+		if t == known {
+			return known, nil
+		}
+	}
+	return "", fmt.Errorf("unknown tool %q (want %s)", s, AllTools())
+}
 
 // InstallHint returns the one-line "here is how to get this tool" message for
 // a backend. It is the fix, not just the diagnosis, so every "not installed"
@@ -44,8 +78,19 @@ func InstallHint(tool Tool) string {
 		return cafeInstallHint
 	case ToolGh:
 		return ghInstallHint
+	case ToolTry:
+		return tryInstallHint
 	}
 	return ""
+}
+
+// Noter is implemented by a backend that can say something more specific than
+// "not installed" about why it cannot run. fth appends the note to the backend
+// listing so the user sees the actual obstacle and the way around it.
+type Noter interface {
+	// UnavailableNote is called only when Available reports false. An empty
+	// string means the backend has nothing to add.
+	UnavailableNote(ctx context.Context) string
 }
 
 // ErrNotFound is returned when a requested tool is not installed on PATH.
@@ -129,6 +174,45 @@ type Repo struct {
 	Name  string
 }
 
+// Previewer is implemented by a backend whose clone URLs cannot be derived from
+// the instance host alone. Trylle is the one: its SSH remote lives on the web
+// host while its HTTPS clone URL is served from the API host, so the generic
+// derivation would show — and offer — a URL that does not resolve.
+type Previewer interface {
+	// PreviewURLs returns the SSH and HTTPS clone URLs a repository would have,
+	// for showing to the user before it exists.
+	PreviewURLs(login, owner, name string) (sshURL, httpsURL string)
+}
+
+// PreviewFor returns the preview URLs for a backend, falling back to the
+// host-based derivation for those that do not need a special case.
+func PreviewFor(b Backend, login, owner, name string) (sshURL, httpsURL string) {
+	if p, ok := b.(Previewer); ok {
+		return p.PreviewURLs(login, owner, name)
+	}
+	return PreviewURLs(login, owner, name)
+}
+
+// Seeder is implemented by a backend whose create call always leaves a commit
+// on the new repository's default branch, whether or not one was asked for.
+//
+// Trylle is the one: `repo create` seeds an "Initial commit" README no matter
+// what fth passes, so the first push is never a fast-forward. Knowing this up
+// front lets fth deal with it deliberately instead of reporting a rejection the
+// user cannot act on.
+type Seeder interface {
+	// SeedsInitialCommit reports whether a freshly created repository is
+	// guaranteed to already contain a commit.
+	SeedsInitialCommit() bool
+}
+
+// SeedsFor reports whether the backend's create call guarantees a seeded
+// commit on the new repository.
+func SeedsFor(b Backend) bool {
+	s, ok := b.(Seeder)
+	return ok && s.SeedsInitialCommit()
+}
+
 // Option customises a backend before it is handed out by Discover. It receives
 // the backend and returns the configured replacement, since backends are value
 // types held in an interface and cannot be mutated in place.
@@ -149,6 +233,21 @@ func WithCafeBin(path string) Option {
 	}
 }
 
+// WithTryBin points the Trylle backend at an explicit binary. `trylle-cli` is
+// usually on PATH, but the shorter `try` name is taken by other programs, so a
+// user whose Trylle install is shadowed needs a way to say which binary they
+// mean.
+func WithTryBin(path string) Option {
+	return func(b Backend) Backend {
+		t, ok := b.(tryBackend)
+		if !ok || path == "" {
+			return b
+		}
+		t.bin = path
+		return t
+	}
+}
+
 // Discover returns a backend for the given tool if its binary is present.
 func Discover(tool Tool, opts ...Option) (Backend, error) {
 	var b Backend
@@ -161,6 +260,8 @@ func Discover(tool Tool, opts ...Option) (Backend, error) {
 		b = cafeBackend{}
 	case ToolGh:
 		b = ghBackend{}
+	case ToolTry:
+		b = tryBackend{}
 	default:
 		return nil, fmt.Errorf("unknown tool %q (want %s)", tool, AllTools())
 	}
