@@ -29,17 +29,60 @@ type Candidate struct {
 	Verified bool
 	// Notes records non-fatal problems worth surfacing to the user.
 	Notes []string
+	// installed and version are what Status would otherwise have to ask the
+	// backend for, which means another process per candidate. probe records them
+	// while it is already talking to the CLI.
+	//
+	// probed records that they were recorded. A Candidate built by hand (a test
+	// fixture, say) has a zero installed, which must not be read as "not
+	// installed" — so anything that needs the answer falls back to asking the
+	// backend when probe has not run.
+	probed    bool
+	installed bool
+	version   string
+}
+
+// isInstalled reports whether the CLI was found, preferring what probe already
+// learned and asking the backend only for a Candidate that never went through it.
+func (c Candidate) isInstalled() bool {
+	if c.probed {
+		return c.installed
+	}
+	return c.Backend.Available(context.Background())
+}
+
+// detection captures the Candidate as a memo, stamping it with the moment it was
+// measured. Only a probed Candidate is worth recording: one built by hand has no
+// facts in it to remember.
+func (c Candidate) detection() Detection {
+	if !c.probed {
+		return Detection{At: time.Time{}}
+	}
+	return Detection{
+		Installed: c.installed,
+		Logins:    c.Logins,
+		Users:     c.Users,
+		Verified:  c.Verified,
+		Notes:     c.Notes,
+		Version:   c.version,
+		At:        time.Now(),
+	}
 }
 
 // Status reports whether the tool's binary was found.
+//
+// Everything it needs was collected during Detect, so printing the listing does
+// not re-probe anything. That matters: the `--version` call alone is a process
+// spawn per backend, and running it serially for the listing added most of a
+// second to a run whose detection had already finished.
 func (c Candidate) Status() string {
-	if !c.Backend.Available(context.Background()) {
+	if !c.isInstalled() {
 		return "not installed"
 	}
 	if !c.Verified {
 		return "installed, no working login"
 	}
-	return fmt.Sprintf("%s %s", c.Backend.Tool(), c.Backend.Version(context.Background()))
+	return fmt.Sprintf("%s %s", c.Backend.Tool(), c.version)
 }
 
 // Name returns the tool identifier.
@@ -55,31 +98,30 @@ func (c Candidate) Name() string { return string(c.Backend.Tool()) }
 //
 // A tool that fails to probe is reported in its candidate's Notes rather than
 // failing the run: one broken CLI must not hide the four that work.
+//
+// A backend measured within detectTTL is taken from the memo instead. Probing is
+// dominated by one TLS handshake per instance that never gets cheaper, so the
+// only way under it is to not make the call.
+//
+// Detect is DetectStream with the results collected into one slice, for callers
+// that have nothing to show until everything is known. A caller that *does* have
+// something to show should use DetectStream directly, so a fast backend can be
+// drawn while a slow one is still probing.
 func Detect(ctx context.Context, tools []Tool, opts ...Option) ([]Candidate, error) {
-	// Discovery is pure and cannot fail for a known tool, so do it up front: a
-	// bad tool name is a usage error and must be reported before any process is
-	// spawned, not from inside a goroutine.
-	backends := make([]Backend, len(tools))
-	for i, t := range tools {
-		b, err := Discover(t, opts...)
-		if err != nil {
-			return nil, err
-		}
-		backends[i] = b
+	results, err := DetectStream(ctx, tools, opts...)
+	if err != nil {
+		return nil, err
 	}
-
-	out := make([]Candidate, len(backends))
-	var wg sync.WaitGroup
-	for i, b := range backends {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			out[i] = probe(ctx, b)
-		}()
+	out := make([]Candidate, len(tools))
+	for r := range results {
+		out[r.Index] = r.Candidate
 	}
-	wg.Wait()
 	return out, nil
 }
+
+// detectTTL is how long a memoised detection is trusted. A zero value disables
+// the memo entirely, which is what -no-cache sets.
+var detectTTL = DefaultCacheTTL
 
 // probe builds the Candidate for one backend: is it installed, which logins does
 // it have, and does each of those credentials actually work.
@@ -87,11 +129,32 @@ func probe(ctx context.Context, b Backend) Candidate {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	c := Candidate{Backend: b, Users: map[string]string{}}
-	if !b.Available(ctx) {
+	c := Candidate{Backend: b, Users: map[string]string{}, probed: true}
+	c.installed = b.Available(ctx)
+	if !c.installed {
 		c.Notes = append(c.Notes, unavailableNote(ctx, b))
 		return c
 	}
+
+	// The version is another process, and it is only ever read to print the
+	// backend listing. Ask for it alongside the login probe rather than after, so
+	// the listing costs no extra wall clock.
+	//
+	// It writes to a local and is joined explicitly before the successful return,
+	// never in a defer: a deferred Wait runs after the return value has been
+	// copied, so the goroutine would still be racing to write it. The early
+	// returns below leave it running, which is safe because the deferred cancel
+	// kills the process it is waiting on.
+	var (
+		versionWG sync.WaitGroup
+		version   string
+	)
+	versionWG.Add(1)
+	go func() {
+		defer versionWG.Done()
+		version = b.Version(ctx)
+	}()
+
 	logins, err := b.Logins(ctx)
 	if err != nil {
 		c.Notes = append(c.Notes, fmt.Sprintf("could not list logins: %v", err))
@@ -131,6 +194,13 @@ func probe(ctx context.Context, b Backend) Candidate {
 		}
 		c.Users[l.Name] = users[i]
 		c.Verified = true
+	}
+
+	// Only a verified backend prints a version, so only now is the probe worth
+	// joining.
+	if c.Verified {
+		versionWG.Wait()
+		c.version = version
 	}
 	return c
 }
@@ -207,7 +277,7 @@ func Filter(candidates []Candidate, targets []Target, tool, host string) ([]Targ
 		if found == nil {
 			return nil, fmt.Errorf("unknown tool %q (want %s)", tool, strings.Join(toolNames(candidates), ", "))
 		}
-		if !found.Backend.Available(context.Background()) {
+		if !found.isInstalled() {
 			return nil, fmt.Errorf("%s is not installed on PATH%s", tool, hintSuffix(found.Backend.Tool()))
 		}
 		targets = byTool(targets, tool)
@@ -340,7 +410,7 @@ func loginHint(t Tool) string {
 func loginHints(cs []Candidate) []string {
 	var out []string
 	for _, c := range cs {
-		if !c.Backend.Available(context.Background()) {
+		if !c.isInstalled() {
 			continue
 		}
 		out = append(out, loginHint(c.Backend.Tool()))
