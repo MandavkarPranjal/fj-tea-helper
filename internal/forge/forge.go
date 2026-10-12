@@ -125,6 +125,12 @@ type Login struct {
 	User string
 	// Default marks the login the CLI uses when none is given.
 	Default bool
+	// APIEndpoint is the instance's API base URL when it is served from
+	// somewhere other than Name, as Trylle serves HTTPS clone URLs from an
+	// api host beside its web host. It is empty for the backends that do not
+	// report one, and is only ever needed to preview a URL, never to reach
+	// the API: every create goes through the backend's own CLI.
+	APIEndpoint string
 }
 
 // CreateRequest is the tool-agnostic description of a repository to create.
@@ -180,17 +186,20 @@ type Repo struct {
 // derivation would show — and offer — a URL that does not resolve.
 type Previewer interface {
 	// PreviewURLs returns the SSH and HTTPS clone URLs a repository would have,
-	// for showing to the user before it exists.
-	PreviewURLs(login, owner, name string) (sshURL, httpsURL string)
+	// for showing to the user before it exists. It takes the whole Login rather
+	// than its name because a backend may need more than the host to build the
+	// URLs: Trylle serves its HTTPS clone URLs from the API endpoint, which is
+	// not the instance host.
+	PreviewURLs(login Login, owner, name string) (sshURL, httpsURL string)
 }
 
 // PreviewFor returns the preview URLs for a backend, falling back to the
 // host-based derivation for those that do not need a special case.
-func PreviewFor(b Backend, login, owner, name string) (sshURL, httpsURL string) {
+func PreviewFor(b Backend, login Login, owner, name string) (sshURL, httpsURL string) {
 	if p, ok := b.(Previewer); ok {
 		return p.PreviewURLs(login, owner, name)
 	}
-	return PreviewURLs(login, owner, name)
+	return PreviewURLs(login.Name, owner, name)
 }
 
 // Seeder is implemented by a backend whose create call always leaves a commit
