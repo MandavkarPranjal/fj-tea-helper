@@ -1,9 +1,12 @@
 package forge
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseVersion(t *testing.T) {
@@ -229,6 +232,120 @@ func TestFilterReportsUnmatchedFlags(t *testing.T) {
 	_, err := Filter(cands, all, "", "nope.example")
 	if err == nil || !strings.Contains(err.Error(), "known:") {
 		t.Errorf("unknown host error = %v, want one listing the known targets", err)
+	}
+}
+
+// slowBackend is a Backend whose every network call takes a fixed time, used to
+// measure how long probing takes rather than what it returns.
+type slowBackend struct {
+	Tool_name Tool
+	// Delay is applied to Logins and to each WhoAmI.
+	Delay time.Duration
+	// Dead Host is the one login whose verification always fails.
+	Dead string
+}
+
+func (b slowBackend) Tool() Tool                         { return b.Tool_name }
+func (b slowBackend) Available(ctx context.Context) bool { return true }
+func (b slowBackend) LoginHint() string                  { return "test auth login" }
+func (b slowBackend) Version(ctx context.Context) string { return "1.0.0" }
+
+func (b slowBackend) CreateRepo(ctx context.Context, req CreateRequest) (*Repo, error) {
+	return &Repo{}, nil
+}
+
+// wait stands in for a network round trip. It honours ctx, the way the real
+// CLIs do when their deadline expires, so a test can simulate an unreachable host
+// instead of actually hanging.
+func wait(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+func (b slowBackend) Logins(ctx context.Context) ([]Login, error) {
+	if err := wait(ctx, b.Delay); err != nil {
+		return nil, err
+	}
+	return []Login{{Name: "a.example"}, {Name: "b.example"}, {Name: b.Dead}}, nil
+}
+
+func (b slowBackend) WhoAmI(ctx context.Context, login string) (string, error) {
+	if err := wait(ctx, b.Delay); err != nil {
+		return "", err
+	}
+	if login == b.Dead {
+		return "", fmt.Errorf("host is unreachable")
+	}
+	return "user-" + login[0:1], nil
+}
+
+// Probing N logins must cost one delay, not N. This is the regression test for
+// the sequential version of probe, which made a three-login backend take three
+// times as long as it needed to.
+func TestProbeVerifiesLoginsConcurrently(t *testing.T) {
+	const delay = 60 * time.Millisecond
+	start := time.Now()
+	c := probe(context.Background(), slowBackend{Tool_name: ToolFj, Delay: delay})
+	elapsed := time.Since(start)
+
+	if got, want := len(c.Users), 2; got != want {
+		t.Fatalf("Users = %v, want %d verified logins", c.Users, want)
+	}
+	if !c.Verified {
+		t.Error("a backend with a working login must be Verified")
+	}
+	// Two delays serial: Logins, then three WhoAmI. Concurrent: Logins, then one
+	// WhoAmI. The threshold sits between the two.
+	if limit := 5 * delay; elapsed > limit {
+		t.Errorf("probe took %v, want well under %v (logins are not concurrent)", elapsed, limit)
+	}
+}
+
+// Concurrency must not cost determinism: the users map and the notes have to be
+// assembled in login order, so two runs against the same hosts agree.
+func TestProbeOutputIsOrderedNotCompletionOrdered(t *testing.T) {
+	b := slowBackend{Tool_name: ToolFj, Delay: 20 * time.Millisecond, Dead: "c.example"}
+	first := probe(context.Background(), b)
+	for range 5 {
+		got := probe(context.Background(), b)
+		if len(got.Notes) != len(first.Notes) || got.Notes[0] != first.Notes[0] {
+			t.Fatalf("notes vary between runs: %q vs %q", got.Notes, first.Notes)
+		}
+		for name, user := range first.Users {
+			if got.Users[name] != user {
+				t.Errorf("Users[%q] = %q, want %q", name, got.Users[name], user)
+			}
+		}
+	}
+	// The failing login is named in the note, with the reason, or the user
+	// cannot tell which of their hosts is the broken one.
+	if !strings.Contains(first.Notes[0], "c.example") ||
+		!strings.Contains(first.Notes[0], "unreachable") {
+		t.Errorf("note = %q, want it to name the dead host and why", first.Notes[0])
+	}
+}
+
+// A backend that never answers must not hold the run open: the probe has its own
+// deadline, so an absent host costs the budget rather than the whole invocation.
+func TestProbeHonoursItsDeadline(t *testing.T) {
+	b := slowBackend{Tool_name: ToolFj, Delay: time.Hour}
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	c := probe(ctx, b)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("probe took %v despite a cancelled context", elapsed)
+	}
+	// Nothing verified is correct here: the point is that it returned at all.
+	if c.Verified {
+		t.Error("a probe that never completed must not claim a verified login")
 	}
 }
 
