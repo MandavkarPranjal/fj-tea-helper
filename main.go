@@ -54,6 +54,7 @@ type options struct {
 	list        bool
 	showVersion bool
 	verbose     bool
+	noCache     bool
 }
 
 func main() {
@@ -154,6 +155,7 @@ func run(argv []string) error {
 	fs.BoolVar(&o.list, "list", false, "list detected backends, logins and licenses, then exit")
 	fs.BoolVar(&o.showVersion, "version", false, "print the helper version and exit")
 	fs.BoolVar(&o.verbose, "verbose", false, "print the underlying CLI commands")
+	fs.BoolVar(&o.noCache, "no-cache", false, "always probe every CLI, ignoring the recent-results cache")
 
 	fs.Usage = func() { usage(fs) }
 
@@ -229,6 +231,13 @@ func run(argv []string) error {
 
 	ctx := context.Background()
 
+	// Probing costs a TLS handshake per instance, so a recent result is reused
+	// unless the user asked for a live look. -no-cache also refreshes the stored
+	// result, so it is the way to recover from a credential that was just fixed.
+	if o.noCache {
+		forge.DisableCache()
+	}
+
 	// Detection is needed for -list and for the real run. When the backend is
 	// named explicitly there is no need to probe the other CLI.
 	tools := forge.AllTools()
@@ -242,13 +251,16 @@ func run(argv []string) error {
 	} else if t != "" && t != "auto" {
 		toolName, tools = string(t), []forge.Tool{t}
 	}
-	// Probing logins means a handful of network round-trips, so it is worth
-	// showing that something is happening rather than a blank screen.
-	spin := progress.New(os.Stderr)
-	spin.Start("detecting backend")
-	candidates, err := forge.Detect(ctx, tools,
+	// Probing logins means a handful of network round-trips, and the backends
+	// finish at wildly different speeds: fj and tea are resolved in tens of
+	// milliseconds while cafe can spend over a second in a TLS handshake. A
+	// spinner would hold all of that back until the slowest one lands, so each
+	// backend is drawn the moment it is known instead.
+	det := progress.NewDetect(os.Stderr, toolLabels(tools))
+	det.Start()
+	candidates, err := collectDetect(ctx, tools, det,
 		forge.WithCafeBin(o.cafeBin), forge.WithTryBin(o.tryBin))
-	spin.Stop()
+	det.Stop()
 	if err != nil {
 		return err
 	}
@@ -434,6 +446,7 @@ func run(argv []string) error {
 	}
 
 	logf(o.verbose, "creating %s/%s on %s via %s...\n", owner, name, login.Name, target.Tool())
+	spin := progress.New(os.Stderr)
 	spin.Start("creating " + owner + "/" + name + " on " + login.Name)
 	repo, err := target.Backend.CreateRepo(ctx, req)
 	spin.Stop()
@@ -624,6 +637,42 @@ func repoNameForDir(dir string) (string, error) {
 //
 // The list is already narrowed by -tool/-host before it gets here, and the
 // first entry is the one fth would have picked on its own.
+// toolLabels names the backends being probed, in the order they will be drawn.
+func toolLabels(tools []forge.Tool) []string {
+	out := make([]string, len(tools))
+	for i, t := range tools {
+		out[i] = string(t)
+	}
+	return out
+}
+
+// collectDetect drains the detection stream, settling each row of the live display
+// as its result arrives, and returns the candidates in the original preference
+// order.
+//
+// The result's Index — not its arrival order — is what places it, so a backend
+// that answers late updates its own row and leaves the order alone.
+func collectDetect(ctx context.Context, tools []forge.Tool, det *progress.Detect,
+	opts ...forge.Option) ([]forge.Candidate, error) {
+	results, err := forge.DetectStream(ctx, tools, opts...)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]forge.Candidate, len(tools))
+	for r := range results {
+		out[r.Index] = r.Candidate
+		det.Settle(r.Index, detectDetail(r.Candidate), !r.Candidate.Verified)
+	}
+	return out, nil
+}
+
+// detectDetail summarises a resolved backend for one row of the display.
+//
+// It reuses Status rather than reformatting the candidate, so what the live
+// display showed and what -list prints cannot drift apart. It reads only what
+// probe recorded, so it costs no process.
+func detectDetail(c forge.Candidate) string { return c.Status() }
+
 func pickTarget(ask *prompt.Prompter, targets []forge.Target) (forge.Target, error) {
 	if len(targets) == 1 || !ask.Interactive() {
 		return targets[0], nil

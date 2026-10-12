@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -346,6 +347,67 @@ func TestProbeHonoursItsDeadline(t *testing.T) {
 	// Nothing verified is correct here: the point is that it returned at all.
 	if c.Verified {
 		t.Error("a probe that never completed must not claim a verified login")
+	}
+}
+
+// countingBackend records how many times each method ran.
+type countingBackend struct {
+	Tool_name Tool
+	mu        sync.Mutex
+	versions  int
+	avail     int
+}
+
+func (b *countingBackend) Tool() Tool                         { return b.Tool_name }
+func (b *countingBackend) LoginHint() string                  { return "test auth login" }
+func (b *countingBackend) Available(ctx context.Context) bool { return true }
+func (b *countingBackend) Version(ctx context.Context) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.versions++
+	return "1.0.0"
+}
+func (b *countingBackend) Logins(ctx context.Context) ([]Login, error) {
+	return []Login{{Name: "a.example", User: "alice"}}, nil
+}
+func (b *countingBackend) WhoAmI(ctx context.Context, l string) (string, error) {
+	return "alice", nil
+}
+func (b *countingBackend) CreateRepo(ctx context.Context, r CreateRequest) (*Repo, error) {
+	return &Repo{}, nil
+}
+
+// Printing the listing must not shell out again. Status used to call
+// Available and Version itself, so every fth run paid a second process per
+// backend — about 650ms on a machine with all five CLIs — to learn facts Detect
+// had already established.
+func TestStatusDoesNotReprobe(t *testing.T) {
+	b := &countingBackend{Tool_name: ToolFj}
+	c := probe(context.Background(), b)
+	if got := b.versions; got != 1 {
+		t.Fatalf("probe ran Version %d times, want 1", got)
+	}
+	if got := c.Status(); got != "fj 1.0.0" {
+		t.Errorf("Status = %q, want %q", got, "fj 1.0.0")
+	}
+	for range 3 {
+		_ = c.Status()
+	}
+	if got := b.versions; got != 1 {
+		t.Errorf("Status ran Version %d times in total, want 1", got)
+	}
+}
+
+// A Candidate nobody probed must still answer honestly rather than reporting a
+// zero-value installed flag as "not installed".
+func TestStatusOnUnprobedCandidate(t *testing.T) {
+	b, err := Discover(ToolFj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := Candidate{Backend: b, Verified: true}
+	if got := c.Status(); got == "not installed" {
+		t.Error("an unprobed Candidate must ask the backend, not assume absence")
 	}
 }
 

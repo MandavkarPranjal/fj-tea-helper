@@ -147,3 +147,27 @@ func (s *Spinner) draw(frame int) {
 func (s *Spinner) write(line string) {
 	_, _ = fmt.Fprint(s.out, line)
 }
+
+// spinnerDotFrames is the animation Detect reuses. Sharing one set of frames
+// keeps the two displays looking like the same program.
+var spinnerDotFrames = spinner.Dot.Frames
+
+const (
+	okMark   = "✓"
+	warnMark = "!"
+)
+
+// eraseToEnd clears from the cursor to the bottom of the screen. Detect draws a
+// block that ends with the cursor on its first row, so this removes exactly the
+// block.
+const eraseToEnd = "\x1b[J"
+
+// newTicker returns the animation clock, at the same rate as the Spinner.
+func newTicker() *time.Ticker {
+	return time.NewTicker(spinner.Dot.FPS)
+}
+
+// utf8Len is the display width of a label. Detection labels are ASCII tool
+// names, so byte length would do, but a rune count is correct for anything else
+// without pulling in a width table.
+func utf8Len(s string) int { return len([]rune(s)) }

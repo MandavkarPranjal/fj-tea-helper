@@ -336,14 +336,16 @@ the first letter of a row to jump straight to it, Enter to choose.
 
 How the list is built:
 
-1. Run `fj auth list` / `tea logins list -o json` / `cafe auth status --json` /
+1. Show a row per CLI as each one answers, so the instances you are signed into
+   start appearing immediately instead of after the slowest one.
+2. Run `fj auth list` / `tea logins list -o json` / `cafe auth status --json` /
    `gh auth status --json hosts` / `try auth status --json` to find configured
    logins.
-2. Confirm each login actually works — for `fj` this means `fj whoami`, because
+3. Confirm each login actually works — for `fj` this means `fj whoami`, because
    `fj auth list` happily reports instances whose stored OAuth grant has been
    revoked. A login that fails is left out of the list rather than offered and
    then failing later.
-3. Order the results by tool (`fj`, then `tea`, `cafe`, `gh`, `try`), and within
+4. Order the results by tool (`fj`, then `tea`, `cafe`, `gh`, `try`), and within
    each tool put the CLI's own default login first. That first row is the one
    Enter accepts, so pressing Enter twice always does something sensible.
 
@@ -351,6 +353,29 @@ How the list is built:
 of these to be installed, and `try` is a name other programs also answer to, so
 putting either first would quietly change what Enter picks for someone who came
 to work on their Forgejo or Gitea host.
+
+### How fast it is
+
+Every CLI is asked at the same time, so the wait is the slowest one rather than
+the sum of all five — roughly a second with all five installed, and
+milliseconds if only one is.
+
+That remaining second is network time that does not go away: each backend is a
+separate process, each opens its own connection, and every one of them pays a
+full TLS handshake. Repeating the call does not warm it up.
+
+So results are also **memoised** in `~/.cache/fth/detect.json` for 10 minutes,
+per tool and per `-cafe-bin`/`-try-bin`. A second run inside that window skips
+the probes entirely and finishes in a couple of milliseconds. The file records
+which accounts and hosts you are signed into, so it is written `0600`, and it
+holds no credentials.
+
+When you have just fixed a credential, run with `-no-cache` to ignore the stored
+result, re-probe every CLI, and refresh it:
+
+```console
+$ fth myproject -no-cache
+```
 
 `-tool` and `-host` narrow the list before it is shown, and are what you want in
 a script:
