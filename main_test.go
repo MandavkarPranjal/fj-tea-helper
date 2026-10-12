@@ -4,6 +4,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -72,6 +73,90 @@ func TestReorderArgsDoubleDashKeepsDashyName(t *testing.T) {
 	}
 	if fs.Arg(0) != "-weird-name" {
 		t.Errorf("positional = %q, want %q", fs.Arg(0), "-weird-name")
+	}
+}
+
+func TestNamesLocalDir(t *testing.T) {
+	// A bare `fth` and an explicit `fth .` both mean "here".
+	for _, args := range [][]string{nil, {"."}, {"./"}, {"  ./.  "}} {
+		if !namesLocalDir(args, "") {
+			t.Errorf("namesLocalDir(%q) = false, want true", args)
+		}
+	}
+
+	// Every other positional stays a repository name.
+	for _, args := range [][]string{{"demo"}, {"owner/demo"}, {"./demo"}, {"~/demo"}, {".."}, {"a", "b"}} {
+		if namesLocalDir(args, "") {
+			t.Errorf("namesLocalDir(%q) = true, want false", args)
+		}
+	}
+
+	// -dir is the user's statement about where the repository goes, so it wins
+	// over anything typed — including a name that matches the directory.
+	if namesLocalDir(nil, "/tmp/somewhere") {
+		t.Error("an explicit -dir must not be overridden by a bare fth")
+	}
+	if namesLocalDir([]string{"."}, "/tmp/somewhere") {
+		t.Error("an explicit -dir must not be overridden by fth .")
+	}
+}
+
+// Standing in a directory called demo, `fth demo` means that directory rather
+// than a new one nested inside it.
+func TestNamesLocalDirMatchesCurrentDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "demo")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Chdir(dir)
+
+	if !namesLocalDir([]string{"demo"}, "") {
+		t.Error(`fth demo inside ~/demo should mean this directory`)
+	}
+	// A different name is still a new repository beside it.
+	for _, arg := range []string{"other", "demo2", "Demo", "my-demo"} {
+		if namesLocalDir([]string{arg}, "") {
+			t.Errorf("namesLocalDir(%q) = true, want false in a directory named demo", arg)
+		}
+	}
+	// owner/name names an owner, so it cannot be shorthand for a location.
+	if namesLocalDir([]string{"someone/demo"}, "") {
+		t.Error(`fth owner/demo should not be read as "here"`)
+	}
+}
+
+func TestRepoNameForDir(t *testing.T) {
+	// An empty directory means the one fth runs from.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	base := filepath.Base(wd)
+	if got, err := repoNameForDir(""); err != nil || got != base {
+		t.Errorf("repoNameForDir(\"\") = %q, %v; want %q", got, err, base)
+	}
+	if got, err := repoNameForDir("."); err != nil || got != base {
+		t.Errorf("repoNameForDir(\".\") = %q, %v; want %q", got, err, base)
+	}
+
+	// A named directory names the repository, which is what makes
+	// `fth -dir ~/project/other` publish "other".
+	dir := filepath.Join(t.TempDir(), "demo")
+	if got, err := repoNameForDir(dir); err != nil || got != "demo" {
+		t.Errorf("repoNameForDir(%q) = %q, %v; want demo", dir, got, err)
+	}
+
+	// A directory whose name cannot be a repository name says so, and points
+	// at the fix, instead of complaining about a name nobody typed.
+	root := string(filepath.Separator)
+	if _, err := repoNameForDir(root); err == nil {
+		t.Errorf("repoNameForDir(%q) succeeded, want an error", root)
+	} else if !strings.Contains(err.Error(), "pass a name") {
+		t.Errorf("repoNameForDir(%q) error = %v; want it to suggest passing a name", root, err)
+	}
+	spaced := filepath.Join(t.TempDir(), "my project")
+	if _, err := repoNameForDir(spaced); err == nil {
+		t.Errorf("repoNameForDir(%q) succeeded, want an error", spaced)
 	}
 }
 

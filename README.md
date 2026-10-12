@@ -48,8 +48,36 @@ needed. At runtime the binary shells out to whichever of `fj`, `tea`, `cafe`,
 ```
 fth [flags] <name>
 fth [flags] <owner>/<name>
+fth [flags]
+fth [flags] .
 fth -list
 ```
+
+With no name — or with `.` — `fth` publishes the directory it runs from: in
+`~/project/demo` it creates `<owner>/demo`, and the repository is named after
+that directory rather than after anything typed on the command line.
+
+```console
+$ cd ~/project/demo
+$ fth
+Plan
+  backend    fj
+  instance   codeberg.org
+  repository you/demo (public)
+  local dir  /home/you/project/demo (existing repo, branch main)
+  ...
+```
+
+`fth demo` inside `~/project/demo` means the same thing. Typing the name of the
+directory you are standing in is asking to publish *that* directory, not to
+build a second one inside it. Any other name still scaffolds a new `./<name>`
+beside where you stand, so `fth demo` from `~/project` is unchanged.
+
+The name follows the directory the repository will live in, so an explicit
+`-dir` is what gets named: `fth -dir ~/project/other` publishes `other` even
+from somewhere else. A directory whose name cannot be a repository name — a
+filesystem root, or a folder with a space in it — is refused with the obvious
+fix rather than an invented name.
 
 Flags may appear before or after the name, so `fth myproject -private` and
 `fth -private myproject` are equivalent.
@@ -70,7 +98,7 @@ Flags may appear before or after the name, so `fth myproject -private` and
 | `-lang` | – | Seed a `.gitignore`: `go`, `node`, `python`, `rust` |
 | `-branch` | `main` | Default branch name |
 | `-remote` | `origin` | Git remote name |
-| `-dir` | `./<name>` | Local directory to scaffold |
+| `-dir` | `./<name>`, or `.` with no name | Local directory to scaffold; with no name it also names the repository |
 | `-readme` | `true` | Write a `README.md` |
 | `-url` | `ssh` | Clone URL to wire up: `ssh` or `https` |
 | `-trust-model` | – | Gitea trust model (`tea` only; ignored elsewhere) |
@@ -113,8 +141,14 @@ fth -tool try -license MIT -lang go myservice
 # Create the repo and local dir, but decide about pushing later
 fth -no-push myservice
 
+# Publish the directory you are standing in, named after it
+cd ~/project/demo && fth
+
+# Same, without leaving the directory
+fth -dir ~/project/other
+
 # Publish a git repo you already have (see below)
-cd ~/code/myservice && fth -dir . -tool fj myservice
+cd ~/code/myservice && fth
 
 # See what would happen
 fth myservice -dry-run
@@ -127,7 +161,7 @@ If the target directory is already a git repository with at least one commit,
 
 ```console
 $ cd ~/code/myservice
-$ fth -dir . myservice
+$ fth
 remote "origin" already exists in /home/you/code/myservice. Name for the new remote? [codeberg]:
 Set "codeberg" as upstream for branch main? [y/N]:
 
