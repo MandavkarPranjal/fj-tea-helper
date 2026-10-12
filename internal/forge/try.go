@@ -113,6 +113,12 @@ func (t tryBackend) Available(ctx context.Context) bool {
 // cheaply and without touching the network or a terminal — deliberately not
 // from `about`, whose Trylle implementation prints a banner and whose
 // impostor's opens a full-screen selector.
+//
+// The deciding word is "trylle", not the shape of the version line. Both
+// executables @trylle/trylle-cli installs are one program and print
+// "trylle-cli v1.2.0" even when invoked as `try`, whereas the unrelated `try`
+// on PATH prints "try 1.10.1" — so accepting a bare "try v1.2.0" would accept
+// precisely the program this check exists to reject.
 func isTrylleCLI(ctx context.Context, path string) bool {
 	if strings.Contains(strings.ToLower(path), "trylle-cli") {
 		return true
@@ -129,7 +135,8 @@ func (t tryBackend) Version(ctx context.Context) string {
 	if err != nil {
 		return "unknown"
 	}
-	// "trylle-cli v1.2.0" or "try v1.2.0".
+	// Verified against trylle-cli 1.2.0: both the `trylle-cli` and the `try`
+	// binary print "trylle-cli v1.2.0", because they are the same program.
 	return parseVersion(out)
 }
 
@@ -178,6 +185,9 @@ func (t tryBackend) Logins(ctx context.Context) ([]Login, error) {
 		URL:     "https://" + host,
 		User:    user,
 		Default: true,
+		// HTTPS clone URLs are served from the API host, not the web host, so
+		// carry the endpoint the CLI reported rather than deriving one later.
+		APIEndpoint: st.APIEndpoint,
 	}}, nil
 }
 
@@ -267,7 +277,7 @@ func (t tryBackend) CreateRepo(ctx context.Context, req CreateRequest) (*Repo, e
 	if repo.CloneURL == "" || repo.SSHURL == "" {
 		t.describe(ctx, req, repo)
 	}
-	fillTryRepoGaps(req, repo)
+	t.fillTryRepoGaps(ctx, req, repo)
 	return repo, nil
 }
 
@@ -316,9 +326,13 @@ func (t tryBackend) describe(ctx context.Context, req CreateRequest, repo *Repo)
 // of every other backend but not of Trylle: HTTPS clone URLs are served from
 // the API host rather than the web host. The generic derivation would hand the
 // user a remote that does not resolve, so this fills only what is genuinely
-// derivable — the SSH remote, which does live on the web host — and derives the
-// HTTPS form from the API endpoint the CLI reported.
-func fillTryRepoGaps(req CreateRequest, repo *Repo) {
+// derivable — the SSH remote, which does live on the web host — and takes the
+// HTTPS form from the API endpoint the CLI reports.
+//
+// ctx is consulted for that endpoint only in the one case the endpoint is
+// needed at all: when the server told us no HTTPS clone URL. Every other path
+// is filled from data already in hand, and no extra process is run for them.
+func (t tryBackend) fillTryRepoGaps(ctx context.Context, req CreateRequest, repo *Repo) {
 	host := bareHost(req.Login)
 	if host == "" {
 		host = defaultTryWebHost
@@ -339,43 +353,76 @@ func fillTryRepoGaps(req CreateRequest, repo *Repo) {
 		repo.SSHURL = "git@" + host + ":" + repo.Owner + "/" + repo.Name + ".git"
 	}
 	if repo.CloneURL == "" {
-		api := apiHostFrom(req.Login)
+		api := ""
+		if st, err := t.status(ctx); err == nil {
+			api = apiBaseURL(st.APIEndpoint)
+		}
+		if api == "" {
+			api = guessedAPIBase(host)
+		}
 		if api == "" {
 			return
 		}
-		repo.CloneURL = "https://" + api + "/git/" + repo.Owner + "/" + repo.Name + ".git"
+		repo.CloneURL = api + "/git/" + repo.Owner + "/" + repo.Name + ".git"
 	}
 }
 
-// apiHostFrom returns the API host for an instance, derived from its web host.
-// trylle.com serves the API from api.trylle.com, and that is the only
-// relationship the CLI exposes, so this is a best guess rather than a fact: it
-// is used only to fill a gap when the CLI reported no clone URL at all. The URL
-// fth actually wires up always comes from the server.
-func apiHostFrom(webURL string) string {
+// apiBaseURL normalises an endpoint reported by `try auth status` into the
+// prefix clone URLs are built on: scheme, host and any path prefix, minus a
+// trailing slash. The scheme is kept rather than assumed, since a self-hosted
+// instance may be reached over plain http. A value with no scheme is not an
+// endpoint and yields "".
+func apiBaseURL(endpoint string) string {
+	s := strings.TrimSpace(endpoint)
+	i := strings.Index(s, "://")
+	if i < 0 {
+		return ""
+	}
+	rest := strings.TrimRight(s[i+3:], "/")
+	if rest == "" {
+		return ""
+	}
+	return s[:i] + "://" + rest
+}
+
+// guessedAPIBase invents an API base from an instance's web host, for the one
+// case apiBaseURL cannot serve: the CLI reporting no endpoint at all.
+//
+// trylle.com serves its API from api.trylle.com, but that is a property of that
+// deployment and not something the CLI promises, so a self-hosted instance need
+// not follow it. It is therefore the last resort, not the rule: whenever an
+// endpoint has been reported, that is what is used, and the URL fth actually
+// wires up normally comes from the server regardless.
+func guessedAPIBase(webURL string) string {
 	host := bareHost(webURL)
 	if host == "" || !strings.Contains(host, ".") {
 		return ""
 	}
-	return "api." + host
+	return "https://api." + host
 }
 
-// tryCreateHint recognises a creation failure the user can act on.
 // PreviewURLs implements Previewer. It exists because Trylle's two clone URLs
 // come from different hosts: SSH is served by the web host, HTTPS by the API
 // host. The generic derivation would pair the web host with both, and the
 // resulting HTTPS remote would fail on the first push.
-func (t tryBackend) PreviewURLs(login, owner, name string) (sshURL, httpsURL string) {
-	host := bareHost(login)
+//
+// login.APIEndpoint is what `try auth status` reported, so a self-hosted
+// deployment gets its real endpoint; guessedAPIBase only covers the case where
+// there is none to report.
+func (t tryBackend) PreviewURLs(login Login, owner, name string) (sshURL, httpsURL string) {
+	host := bareHost(login.Name)
 	if host == "" {
 		host = defaultTryWebHost
 	}
-	api := apiHostFrom(host)
+	api := apiBaseURL(login.APIEndpoint)
+	if api == "" {
+		api = guessedAPIBase(host)
+	}
 	if api == "" {
 		return "", ""
 	}
 	return "git@" + host + ":" + owner + "/" + name + ".git",
-		"https://" + api + "/git/" + owner + "/" + name + ".git"
+		api + "/git/" + owner + "/" + name + ".git"
 }
 
 func tryCreateHint(out string) string {

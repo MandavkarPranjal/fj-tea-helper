@@ -442,8 +442,11 @@ prefers `trylle-cli`.
   name comes from the web URL the CLI reports, so `-host` works for either.
 - **The two clone URLs are on different hosts.** The web app and the SSH remote
   live on `trylle.com`, but HTTPS clone URLs are served from the API host
-  (`https://api.trylle.com/git/OWNER/NAME.git`). `fth` derives each from the
-  right one, so both the preview and the remote it writes actually resolve.
+  (`https://api.trylle.com/git/OWNER/NAME.git`). `fth` takes each from the right
+  one, so both the preview and the remote it writes actually resolve. The API
+  endpoint comes from `try auth status`, so a self-hosted deployment whose API
+  sits somewhere other than `api.WEB-HOST` gets its own; only when the CLI
+  reports no endpoint at all does `fth` fall back to that convention.
 - **`--auto-init` is never passed.** It would create a server-side commit that
   collides with the one `fth` pushes from the local scaffold, so
   `README`/`.gitignore`/`LICENSE` are written locally, like every non-tea path.

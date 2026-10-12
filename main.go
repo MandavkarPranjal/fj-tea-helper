@@ -301,7 +301,7 @@ func run(argv []string) error {
 	// SSH is the preferred remote, but the user gets to choose, so ask before
 	// anything is created. -url skips the question entirely. With -no-scaffold
 	// there is no local remote to wire up, so there is nothing to ask about.
-	scheme, previewURL, err := chooseScheme(ask, o.url, explicitURL, target.Backend, login.Name, owner, name, !o.noScaffold)
+	scheme, previewURL, err := chooseScheme(ask, o.url, explicitURL, target.Backend, login, owner, name, !o.noScaffold)
 	if err != nil {
 		return err
 	}
@@ -578,7 +578,7 @@ func askForRemoteName(ask *prompt.Prompter, local *scaffold.LocalState, host, ta
 //
 // It returns the scheme and the URL it corresponds to, so the plan can show
 // exactly what the remote will point at.
-func chooseScheme(ask *prompt.Prompter, flagValue string, explicit bool, backend forge.Backend, host, owner, name string, relevant bool) (scheme, remoteURL string, err error) {
+func chooseScheme(ask *prompt.Prompter, flagValue string, explicit bool, backend forge.Backend, login forge.Login, owner, name string, relevant bool) (scheme, remoteURL string, err error) {
 	want := strings.ToLower(strings.TrimSpace(flagValue))
 	if want == "" {
 		want = "ssh"
@@ -586,7 +586,7 @@ func chooseScheme(ask *prompt.Prompter, flagValue string, explicit bool, backend
 	if want != "ssh" && want != "https" {
 		return "", "", fmt.Errorf("unknown -url %q (want ssh or https)", flagValue)
 	}
-	sshURL, httpsURL := forge.PreviewFor(backend, host, owner, name)
+	sshURL, httpsURL := forge.PreviewFor(backend, login, owner, name)
 	url := sshURL
 	if want == "https" {
 		url = httpsURL

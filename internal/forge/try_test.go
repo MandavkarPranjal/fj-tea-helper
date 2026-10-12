@@ -107,6 +107,67 @@ exit 1
 	}
 }
 
+// The endpoint the CLI reports has to survive all the way to the URLs, or a
+// self-hosted instance whose API is not at api.<web host> is shown a remote that
+// cannot work. This exercises the whole chain, not just the helper.
+func TestTryReportedAPIEndpointReachesPreviewURLs(t *testing.T) {
+	writeStubTry(t, "trylle-cli", `#!/bin/sh
+case " $* " in
+  *" auth status "*)
+    echo '{"apiEndpoint":"https://forge.acme.test/api","webUrl":"https://git.acme.test","authenticated":true,"viewer":{"login":"octocat"}}'
+    exit 0 ;;
+esac
+exit 1
+`)
+	tb := tryBackend{}
+	ctx := context.Background()
+	logins, err := tb.Logins(ctx)
+	if err != nil {
+		t.Fatalf("Logins: %v", err)
+	}
+	if logins[0].APIEndpoint != "https://forge.acme.test/api" {
+		t.Fatalf("APIEndpoint = %q, want the reported endpoint", logins[0].APIEndpoint)
+	}
+	// Through the exported helper, so this covers the path main.go takes.
+	ssh, https := PreviewFor(tb, logins[0], "octocat", "demo")
+	if ssh != "git@git.acme.test:octocat/demo.git" {
+		t.Errorf("ssh = %q, want the web host", ssh)
+	}
+	if https != "https://forge.acme.test/api/git/octocat/demo.git" {
+		t.Errorf("https = %q, want the reported endpoint", https)
+	}
+}
+
+// The same endpoint has to reach a repository created when the server reports no
+// clone URL at all, which is the only case fth derives one.
+func TestTryReportedAPIEndpointFillsMissingCloneURL(t *testing.T) {
+	writeStubTry(t, "trylle-cli", `#!/bin/sh
+case " $* " in
+  *" auth status "*)
+    echo '{"apiEndpoint":"https://forge.acme.test/api","webUrl":"https://git.acme.test","authenticated":true,"viewer":{"login":"octocat"}}'
+    exit 0 ;;
+  *" repo create "*|*" repo view "*)
+    echo '{"fullName":"octocat/demo","url":"https://git.acme.test/octocat/demo"}'
+    exit 0 ;;
+esac
+exit 1
+`)
+	repo, err := tryBackend{}.CreateRepo(context.Background(), CreateRequest{
+		Login: "git.acme.test",
+		Owner: "octocat",
+		Name:  "demo",
+	})
+	if err != nil {
+		t.Fatalf("CreateRepo: %v", err)
+	}
+	if repo.CloneURL != "https://forge.acme.test/api/git/octocat/demo.git" {
+		t.Errorf("CloneURL = %q, want the reported endpoint", repo.CloneURL)
+	}
+	if repo.SSHURL != "git@git.acme.test:octocat/demo.git" {
+		t.Errorf("SSHURL = %q, want the web host", repo.SSHURL)
+	}
+}
+
 func TestTryLoginsWithoutCredentialIsActionable(t *testing.T) {
 	writeStubTry(t, "trylle-cli", `#!/bin/sh
 case " $* " in
@@ -334,7 +395,7 @@ func TestTryExecRefusesWhenNoBinaryIsFound(t *testing.T) {
 // The preview must agree with what creation actually produces, or the user is
 // shown a remote that will not work.
 func TestTryPreviewURLs(t *testing.T) {
-	ssh, https := tryBackend{}.PreviewURLs("trylle.com", "octocat", "demo")
+	ssh, https := tryBackend{}.PreviewURLs(Login{Name: "trylle.com", APIEndpoint: "https://api.trylle.com"}, "octocat", "demo")
 	if ssh != "git@trylle.com:octocat/demo.git" {
 		t.Errorf("ssh = %q, want the web host", ssh)
 	}
@@ -345,18 +406,27 @@ func TestTryPreviewURLs(t *testing.T) {
 }
 
 func TestTryPreviewURLsForSelfHosted(t *testing.T) {
-	ssh, https := tryBackend{}.PreviewURLs("git.acme.test", "octocat", "demo")
+	// A self-hosted instance need not put its API under api.<web host>; what the
+	// CLI reports wins, and only a login with no endpoint falls back to guessing.
+	ssh, https := tryBackend{}.PreviewURLs(Login{Name: "git.acme.test", APIEndpoint: "https://forge.acme.test/api"}, "octocat", "demo")
 	if ssh != "git@git.acme.test:octocat/demo.git" {
 		t.Errorf("ssh = %q", ssh)
 	}
+	if https != "https://forge.acme.test/api/git/octocat/demo.git" {
+		t.Errorf("https = %q, want the reported endpoint, not api.<web host>", https)
+	}
+}
+
+func TestTryPreviewURLsGuessesWhenNoEndpointReported(t *testing.T) {
+	_, https := tryBackend{}.PreviewURLs(Login{Name: "git.acme.test"}, "octocat", "demo")
 	if https != "https://api.git.acme.test/git/octocat/demo.git" {
-		t.Errorf("https = %q", https)
+		t.Errorf("https = %q, want the fallback guess", https)
 	}
 }
 
 // Backends without a special case keep the host-based derivation.
 func TestPreviewForFallsBackToHostDerivation(t *testing.T) {
-	ssh, https := PreviewFor(ghBackend{}, "github.com", "octocat", "demo")
+	ssh, https := PreviewFor(ghBackend{}, Login{Name: "github.com"}, "octocat", "demo")
 	if ssh != "git@github.com:octocat/demo.git" {
 		t.Errorf("ssh = %q", ssh)
 	}
