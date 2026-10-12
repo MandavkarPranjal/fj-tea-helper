@@ -5,7 +5,19 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
+
+// probeTimeout bounds a single backend's probe: the availability check, the
+// login listing and every per-login verification that belongs to it.
+//
+// Without it, one unreachable instance (a self-hosted Forgejo behind a VPN, a
+// GitHub Enterprise host that has stopped resolving) holds the whole run for as
+// long as the underlying CLI's own HTTP timeout, or forever. The budget is
+// deliberately generous because a slow-but-working host should still be offered;
+// it exists to stop an absent one from deciding how long everyone else waits.
+var probeTimeout = 8 * time.Second
 
 // Candidate is a tool plus the instances it is logged into.
 type Candidate struct {
@@ -35,44 +47,92 @@ func (c Candidate) Name() string { return string(c.Backend.Tool()) }
 
 // Detect inspects every supported tool and returns the candidates, ordered by
 // preference (Forgejo's `fj` first, since it is the platform-native client).
+//
+// The tools are probed concurrently and so are the logins within each tool, so
+// the wall-clock cost is the slowest single probe rather than the sum of every
+// probe. Order is fixed by the tools slice, not by whichever goroutine finished
+// first, so the listing and the default target stay identical run to run.
+//
+// A tool that fails to probe is reported in its candidate's Notes rather than
+// failing the run: one broken CLI must not hide the four that work.
 func Detect(ctx context.Context, tools []Tool, opts ...Option) ([]Candidate, error) {
-	var out []Candidate
-	for _, t := range tools {
+	// Discovery is pure and cannot fail for a known tool, so do it up front: a
+	// bad tool name is a usage error and must be reported before any process is
+	// spawned, not from inside a goroutine.
+	backends := make([]Backend, len(tools))
+	for i, t := range tools {
 		b, err := Discover(t, opts...)
 		if err != nil {
 			return nil, err
 		}
-		if !b.Available(ctx) {
-			out = append(out, Candidate{Backend: b, Users: map[string]string{},
-				Notes: []string{unavailableNote(ctx, b)}})
-			continue
-		}
-		c := Candidate{Backend: b, Users: map[string]string{}}
-		logins, err := b.Logins(ctx)
-		if err != nil {
-			c.Notes = append(c.Notes, fmt.Sprintf("could not list logins: %v", err))
-			out = append(out, c)
-			continue
-		}
-		c.Logins = logins
-		for _, l := range logins {
-			// tea reports the user inline; fj requires a round trip.
-			if l.User != "" {
-				c.Users[l.Name] = l.User
-				c.Verified = true
-				continue
-			}
-			user, err := b.WhoAmI(ctx, l.Name)
-			if err != nil {
-				c.Notes = append(c.Notes, fmt.Sprintf("login %q unusable: %s", l.Name, firstLine(err.Error())))
-				continue
-			}
-			c.Users[l.Name] = user
-			c.Verified = true
-		}
-		out = append(out, c)
+		backends[i] = b
 	}
+
+	out := make([]Candidate, len(backends))
+	var wg sync.WaitGroup
+	for i, b := range backends {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out[i] = probe(ctx, b)
+		}()
+	}
+	wg.Wait()
 	return out, nil
+}
+
+// probe builds the Candidate for one backend: is it installed, which logins does
+// it have, and does each of those credentials actually work.
+func probe(ctx context.Context, b Backend) Candidate {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	c := Candidate{Backend: b, Users: map[string]string{}}
+	if !b.Available(ctx) {
+		c.Notes = append(c.Notes, unavailableNote(ctx, b))
+		return c
+	}
+	logins, err := b.Logins(ctx)
+	if err != nil {
+		c.Notes = append(c.Notes, fmt.Sprintf("could not list logins: %v", err))
+		return c
+	}
+	c.Logins = logins
+
+	// tea and gh report the account inline, so they usually need no round trip
+	// at all; fj needs one per host, and a user signed into several Forgejo
+	// hosts should not pay for them in sequence.
+	users := make([]string, len(logins))
+	errs := make([]error, len(logins))
+	var wg sync.WaitGroup
+	for i, l := range logins {
+		if l.User != "" {
+			users[i] = l.User
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			users[i], errs[i] = b.WhoAmI(ctx, l.Name)
+		}()
+	}
+	wg.Wait()
+
+	// Notes and Users are filled in login order, not completion order, so two
+	// runs against the same hosts print the same thing.
+	for i, l := range logins {
+		if users[i] == "" {
+			note := fmt.Sprintf("login %q unusable", l.Name)
+			if errs[i] != nil {
+				note += ": " + firstLine(errs[i].Error())
+			}
+			c.Notes = append(c.Notes, note)
+			continue
+		}
+		c.Users[l.Name] = users[i]
+		c.Verified = true
+	}
+	return c
 }
 
 // Target is a concrete destination: one backend CLI logged into one instance.

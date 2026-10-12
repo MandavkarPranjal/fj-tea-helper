@@ -73,6 +73,10 @@ func (b teaBackend) Logins(ctx context.Context) ([]Login, error) {
 // WhoAmI implements Backend. `tea whoami` takes no flags and no login, so the
 // best source of truth is the login list itself.
 func (b teaBackend) WhoAmI(ctx context.Context, login string) (string, error) {
+	// `tea logins list` is the only source of the account name, so this is one
+	// more network round trip. Detect avoids it for every login tea reported a
+	// user for, which is all of them in practice; this is the fallback for a
+	// login record that came back without one.
 	logins, err := b.Logins(ctx)
 	if err != nil {
 		return "", err

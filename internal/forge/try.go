@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 )
 
 // tryInstallHint is shown when no Trylle CLI is found. The npm and PyPI
@@ -67,16 +69,54 @@ func (t tryBackend) exe(ctx context.Context) string {
 	if t.bin != "" {
 		return t.bin
 	}
+	return resolveTryExe(ctx)
+}
+
+// resolveTryExe finds the first name on PATH that is genuinely the Trylle CLI,
+// remembering the answer for the rest of the run.
+//
+// resolveTryExe spawns a process, and it is asked for on every call — Available,
+// Logins, WhoAmI, Version and UnavailableNote all want the binary — so without
+// this one fth run starts the same program several times over to learn a fact
+// that cannot change: the -try-bin override is handled before this point, and
+// PATH does not move mid-run.
+//
+// A failure is only remembered when the context was still live, so a probe that
+// was cancelled by its own deadline does not poison the next caller with a
+// "not installed" verdict that was really just a timeout.
+//
+// The cache is keyed by PATH because PATH is the only thing that can change the
+// answer, which also keeps it honest under tests that install stubs.
+var (
+	tryExeMu   sync.Mutex
+	tryExeKey  string
+	tryExePath string
+	tryExeOK   bool
+)
+
+func resolveTryExe(ctx context.Context) string {
+	key := os.Getenv("PATH")
+
+	tryExeMu.Lock()
+	defer tryExeMu.Unlock()
+	if tryExeOK && tryExeKey == key {
+		return tryExePath
+	}
+	path := ""
 	for _, name := range tryCandidates {
 		p, err := lookPath(name)
 		if err != nil {
 			continue
 		}
 		if isTrylleCLI(ctx, p) {
-			return p
+			path = p
+			break
 		}
 	}
-	return ""
+	if ctx.Err() == nil {
+		tryExeKey, tryExePath, tryExeOK = key, path, true
+	}
+	return path
 }
 
 // exec runs the Trylle CLI, refusing to do so if no genuine binary was found.
@@ -89,19 +129,7 @@ func (t tryBackend) exec(ctx context.Context, args ...string) (string, error) {
 }
 
 func (t tryBackend) Available(ctx context.Context) bool {
-	if t.bin != "" {
-		return true
-	}
-	for _, name := range tryCandidates {
-		p, err := lookPath(name)
-		if err != nil {
-			continue
-		}
-		if isTrylleCLI(ctx, p) {
-			return true
-		}
-	}
-	return false
+	return t.exe(ctx) != ""
 }
 
 // isTrylleCLI reports whether a binary found on PATH really is the Trylle CLI.
