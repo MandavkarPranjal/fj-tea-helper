@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -138,7 +139,7 @@ func run(argv []string) error {
 	fs.StringVar(&o.lang, "lang", "", "seed a .gitignore for: go, node, python, rust")
 	fs.StringVar(&o.branch, "branch", "main", "default branch name")
 	fs.StringVar(&o.remote, "remote", "origin", "git remote name")
-	fs.StringVar(&o.dir, "dir", "", "local directory (default: ./<name>)")
+	fs.StringVar(&o.dir, "dir", "", "local directory (default: . with no name, otherwise ./<name>)")
 	fs.StringVar(&o.trustModel, "trust-model", "", "Gitea trust model (tea only; ignored by other backends)")
 	fs.BoolVar(&o.template, "template", false, "mark the repository as a template (tea only)")
 	fs.BoolVar(&o.readme, "readme", true, "write a README.md")
@@ -184,27 +185,46 @@ func run(argv []string) error {
 	}
 
 	rest := fs.Args()
-	if o.list {
-		// fall through: -list does not need a name
-	} else {
-		switch len(rest) {
-		case 0:
-			fs.Usage()
-			return errors.New("a repository name is required")
-		case 1:
-			// Allow `fth owner/name` as a shorthand.
-			if owner, name, ok := strings.Cut(rest[0], "/"); ok && owner != "" && name != "" {
-				if o.owner != "" && o.owner != owner {
-					return fmt.Errorf("conflicting owners: -owner %q and positional %q", o.owner, owner)
-				}
-				o.owner, o.name = owner, name
-			} else {
-				o.name = rest[0]
-			}
-		default:
-			fs.Usage()
-			return fmt.Errorf("unexpected arguments: %s", strings.Join(rest, " "))
+
+	// A bare `fth`, an explicit `fth .`, and a name that is exactly the
+	// current directory's own name all mean the same thing: publish where I am
+	// standing. Run from ~/project/demo each of them asks for <owner>/demo in
+	// that same directory. The third case matters because `fth demo` inside
+	// ~/project/demo would otherwise quietly build a second repository inside
+	// the first, which is never what someone typing that means.
+	inPlace := !o.list && namesLocalDir(rest, o.dir)
+	if inPlace {
+		rest = nil
+	}
+
+	switch {
+	case o.list:
+		// -list does not need a name
+	case inPlace || len(rest) == 0:
+		// No name was typed, so it comes from the directory the repository
+		// will live in.
+		src := o.dir
+		if src == "" {
+			src = "."
 		}
+		name, err := repoNameForDir(src)
+		if err != nil {
+			return err
+		}
+		o.name, o.dir = name, src
+	case len(rest) == 1:
+		// Allow `fth owner/name` as a shorthand.
+		if owner, name, ok := strings.Cut(rest[0], "/"); ok && owner != "" && name != "" {
+			if o.owner != "" && o.owner != owner {
+				return fmt.Errorf("conflicting owners: -owner %q and positional %q", o.owner, owner)
+			}
+			o.owner, o.name = owner, name
+		} else {
+			o.name = rest[0]
+		}
+	default:
+		fs.Usage()
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(rest, " "))
 	}
 
 	ctx := context.Background()
@@ -350,6 +370,14 @@ func run(argv []string) error {
 		}
 	}
 
+	// The inspected state carries the absolute path, so the plan can name the
+	// directory in full. A bare `fth` works in "." and saying so is no help
+	// once the user is looking at a dozen of them.
+	planDir := dir
+	if local != nil {
+		planDir = local.Dir
+	}
+
 	// Build the plan before touching anything, so -dry-run is meaningful.
 	plan := createPlan{
 		Tool:        string(target.Tool()),
@@ -359,7 +387,7 @@ func run(argv []string) error {
 		Description: o.description,
 		Private:     private,
 		Branch:      localBranch,
-		Dir:         dir,
+		Dir:         planDir,
 		Remote:      remoteName,
 		Push:        !o.noPush,
 		Scaffold:    !o.noScaffold,
@@ -507,6 +535,71 @@ func run(argv []string) error {
 		}
 	}
 	return nil
+}
+
+// namesLocalDir reports whether the positional arguments ask for the directory
+// fth runs from rather than for a new repository beside it: no name at all, an
+// explicit ".", or a name that is precisely the current directory's own name.
+//
+// An explicit -dir wins over anything typed, since it is the user's statement
+// about where the repository goes. So does owner/name, which names an owner and
+// so can never be shorthand for a location. Anything else stays a repository
+// name: `fth other` in ~/demo is a new ./other, as it has always been.
+func namesLocalDir(args []string, dirFlag string) bool {
+	if strings.TrimSpace(dirFlag) != "" {
+		return false
+	}
+	switch len(args) {
+	case 0:
+		return true
+	case 1:
+	default:
+		return false // fth reports surplus arguments itself
+	}
+	arg := strings.TrimSpace(args[0])
+	if arg == "" {
+		return false
+	}
+	// "." and anything that cleans to it names the current directory. This
+	// comes before the separator check, since spellings like "./." clean to
+	// "." while still containing one.
+	if filepath.Clean(arg) == "." {
+		return true
+	}
+	// Any other path is a name with a separator in it, not a location.
+	if strings.Contains(arg, "/") {
+		return false
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return false
+	}
+	return arg == filepath.Base(wd)
+}
+
+// repoNameForDir derives a repository name from a local directory: its last
+// path element, which is what a bare `fth` means by "this one". Run from
+// ~/project/demo it therefore asks for <owner>/demo.
+//
+// The directory named is the one that will hold the repository, so an explicit
+// -dir is what gets named — `fth -dir ~/project/other` publishes "other"
+// rather than whichever directory fth happened to be invoked from. A directory
+// whose name cannot be a repository name (a filesystem root, or a name with a
+// space in it) is refused with the obvious remedy instead of a bare complaint
+// about a name the user never typed.
+func repoNameForDir(dir string) (string, error) {
+	if strings.TrimSpace(dir) == "" {
+		dir = "."
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	name, err := forge.SanitizeName(filepath.Base(abs))
+	if err != nil {
+		return "", fmt.Errorf("cannot derive a repository name from %s (%v); pass a name", abs, err)
+	}
+	return name, nil
 }
 
 // pickTarget shows every instance fth can create on and returns the chosen one.
@@ -748,7 +841,14 @@ func usage(fs *flag.FlagSet) {
 Usage:
   fth [flags] <name>
   fth [flags] <owner>/<name>
+  fth [flags]
+  fth [flags] .
   fth -list
+
+With no name, with ".", or with the name of the directory you are standing in,
+the repository is published where you stand: in ~/project/demo it creates
+<owner>/demo in that same directory. Any other name scaffolds a new ./<name>
+beside you instead.
 
 It detects every 'fj' (Forgejo), 'tea' (Gitea), 'cafe' (GitCafe), 'gh' (GitHub)
 and 'try' (Trylle) login you have, asks which instance to create on, creates the
@@ -761,6 +861,9 @@ Flags:
 	fmt.Fprintf(os.Stderr, `
 Examples:
   fth myproject
+  cd ~/project/demo && fth
+  cd ~/project/demo && fth demo
+  fth -dir ~/project/other
   fth -tool fj -host codeberg.org -visibility private -lang go myproject
   fth -tool tea -license MIT -lang node myproject
   fth -tool cafe -cafe-bin ~/.bun/install/global/node_modules/@gitcafe/cli/bin/cafe.js myproject
