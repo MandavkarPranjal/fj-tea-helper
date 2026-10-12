@@ -126,17 +126,22 @@ func TestNamesLocalDirMatchesCurrentDirectory(t *testing.T) {
 }
 
 func TestRepoNameForDir(t *testing.T) {
-	// An empty directory means the one fth runs from.
+	// An empty directory means the one fth runs from. A whitespace-only one
+	// does not: it names a directory whose name is whitespace, and falling back
+	// to the working directory would publish a different name than the one on
+	// disk.
 	wd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	base := filepath.Base(wd)
-	if got, err := repoNameForDir(""); err != nil || got != base {
-		t.Errorf("repoNameForDir(\"\") = %q, %v; want %q", got, err, base)
+	if got, err := repoNameForDir(""); err != nil || got != filepath.Base(wd) {
+		t.Errorf("repoNameForDir(\"\") = %q, %v; want %q", got, err, filepath.Base(wd))
 	}
-	if got, err := repoNameForDir("."); err != nil || got != base {
-		t.Errorf("repoNameForDir(\".\") = %q, %v; want %q", got, err, base)
+	if got, err := repoNameForDir("."); err != nil || got != filepath.Base(wd) {
+		t.Errorf("repoNameForDir(\".\") = %q, %v; want %q", got, err, filepath.Base(wd))
+	}
+	if _, err := repoNameForDir(" "); err == nil {
+		t.Error(`repoNameForDir(" ") succeeded; a whitespace -dir names a directory, not "here"`)
 	}
 
 	// A named directory names the repository, which is what makes
@@ -157,6 +162,37 @@ func TestRepoNameForDir(t *testing.T) {
 	spaced := filepath.Join(t.TempDir(), "my project")
 	if _, err := repoNameForDir(spaced); err == nil {
 		t.Errorf("repoNameForDir(%q) succeeded, want an error", spaced)
+	}
+}
+
+// A basename that trimming would change must not derive a name, because the
+// name would then describe a directory other than the one holding the
+// repository: " demo " would publish "demo" into " demo ", and " " would fall
+// back to the enclosing directory's name entirely.
+func TestRepoNameForDirRejectsTrimmedBasenames(t *testing.T) {
+	parent := t.TempDir()
+	cases := map[string]string{
+		"leading and trailing": " demo ",
+		"trailing only":        "demo ",
+		"leading only":         " demo",
+		"whitespace only":      " ",
+		"tab":                  "\t",
+	}
+	for what, base := range cases {
+		t.Run(what, func(t *testing.T) {
+			dir := filepath.Join(parent, base)
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatalf("mkdir %q: %v", dir, err)
+			}
+			got, err := repoNameForDir(dir)
+			if err == nil {
+				t.Fatalf("repoNameForDir(%q) = %q, want an error", dir, got)
+			}
+			// The name must not leak through, and the error must name the fix.
+			if strings.Contains(err.Error(), "want a name") {
+				t.Errorf("error = %v; want it to reject the directory", err)
+			}
+		})
 	}
 }
 

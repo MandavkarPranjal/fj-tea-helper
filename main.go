@@ -583,19 +583,32 @@ func namesLocalDir(args []string, dirFlag string) bool {
 //
 // The directory named is the one that will hold the repository, so an explicit
 // -dir is what gets named — `fth -dir ~/project/other` publishes "other"
-// rather than whichever directory fth happened to be invoked from. A directory
-// whose name cannot be a repository name (a filesystem root, or a name with a
-// space in it) is refused with the obvious remedy instead of a bare complaint
-// about a name the user never typed.
+// rather than whichever directory fth happened to be invoked from.
+//
+// The name must still describe that directory. SanitizeName trims, so a
+// basename with padding would derive a name that no longer matches it: -dir
+// " demo " would publish "demo" inside a directory called " demo ", and -dir " "
+// would fall back to the enclosing directory's name for a directory called " ".
+// Silently naming a repository after a directory other than the one holding it
+// is worse than refusing, so any basename that trimming would change is
+// rejected along with the obvious ones (a filesystem root, or a name with a
+// space in it) — all with the same remedy, which is to pass a name.
 func repoNameForDir(dir string) (string, error) {
-	if strings.TrimSpace(dir) == "" {
+	// Only a genuinely empty -dir means the working directory. A whitespace
+	// -dir is a directory whose name is whitespace, and trimming it here would
+	// quietly aim the repository somewhere else entirely.
+	if dir == "" {
 		dir = "."
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return "", err
 	}
-	name, err := forge.SanitizeName(filepath.Base(abs))
+	base := filepath.Base(abs)
+	if trimmed := strings.TrimSpace(base); trimmed != base {
+		return "", fmt.Errorf("cannot derive a repository name from %s (%q has leading or trailing whitespace); rename the directory or pass a name", abs, base)
+	}
+	name, err := forge.SanitizeName(base)
 	if err != nil {
 		return "", fmt.Errorf("cannot derive a repository name from %s (%v); pass a name", abs, err)
 	}

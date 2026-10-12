@@ -75,9 +75,22 @@ beside where you stand, so `fth demo` from `~/project` is unchanged.
 
 The name follows the directory the repository will live in, so an explicit
 `-dir` is what gets named: `fth -dir ~/project/other` publishes `other` even
-from somewhere else. A directory whose name cannot be a repository name — a
-filesystem root, or a folder with a space in it — is refused with the obvious
-fix rather than an invented name.
+from somewhere else.
+
+Because the name comes from the directory, it has to still describe that
+directory once derived. A directory whose name cannot be a repository name is
+refused with the obvious fix rather than an invented one — a filesystem root, a
+name with a space in it, or leading and trailing whitespace:
+
+```console
+$ fth -dir ' demo '
+error: cannot derive a repository name from /home/you/project/ demo  (" demo " has
+leading or trailing whitespace); rename the directory or pass a name
+```
+
+Padding is refused rather than trimmed because trimming would publish `demo`
+into a directory called `" demo "` — a repository whose name does not describe
+the directory holding it.
 
 Flags may appear before or after the name, so `fth myproject -private` and
 `fth -private myproject` are equivalent.
