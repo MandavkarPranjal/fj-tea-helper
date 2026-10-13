@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeTerminal reports itself as a terminal so the display animates, and records
@@ -60,6 +61,17 @@ func TestDetectEraseStaysWithinBlock(t *testing.T) {
 	if !strings.Contains(out, "\x1b[3A") {
 		t.Errorf("expected the block to step back up by its own height:\n%q", out)
 	}
+
+	// Erase walks back up only as far as it stepped down, so a 3-row block asks
+	// for two rows, never three or more.
+	d.Stop()
+	out = ft.String()
+	if !strings.HasSuffix(out, "\x1b[2A") {
+		t.Errorf("erase did not step back up two rows:\n%q", tail(out))
+	}
+	if strings.Contains(out, "\x1b[4A") {
+		t.Errorf("erase walked the cursor past the top of a 3-row block:\n%q", tail(out))
+	}
 }
 
 // Stop must end with the block cleared and the cursor left where the block began,
@@ -67,18 +79,29 @@ func TestDetectEraseStaysWithinBlock(t *testing.T) {
 func TestDetectStopClearsBlock(t *testing.T) {
 	ft := &fakeTerminal{}
 	d := newDetectForTest(ft, []string{"fj", "tea"})
-	d.Start()
 	d.Settle(0, "fj 0.6.0", false)
 	d.Settle(1, "tea 0.15.1", false)
 	d.Stop()
 
 	out := ft.String()
-	if !strings.HasSuffix(out, eraseToEnd) {
-		t.Errorf("Stop did not finish by clearing from the cursor down:\n%q", tail(out))
+	// Two rows, so two eraseLines and one step back up to the first row. Clearing
+	// only the block is the point: ESC[J would also take anything printed below.
+	want := eraseLine + "\n" + eraseLine + "\x1b[1A"
+	if !strings.HasSuffix(out, want) {
+		t.Errorf("Stop did not end by clearing its 2-row block and returning to the top:\n%q", tail(out))
 	}
-	// Stop must wait for the animation goroutine, so nothing may follow the erase.
-	if strings.Contains(out[len(out)-len(eraseToEnd):], "\x1b[2K") {
-		t.Error("something wrote to the display after Stop")
+	if strings.Contains(out, "\x1b[J") {
+		t.Errorf("Stop cleared past the block:\n%q", tail(out))
+	}
+
+	// Stop must wait for the animation goroutine, so nothing may be written once
+	// it has returned. The tick is a tenth of a second, so several frames' worth
+	// of silence is a real check rather than a race with the clock; a slow machine
+	// only makes it more certain.
+	snapshot := ft.String()
+	time.Sleep(500 * time.Millisecond)
+	if got := ft.String(); got != snapshot {
+		t.Errorf("something wrote to the display after Stop returned:\ngot  %q\nwant %q", tail(got), tail(snapshot))
 	}
 }
 
@@ -115,16 +138,20 @@ func TestDetectSettlesRowInPlace(t *testing.T) {
 
 	out := stripANSI(ft.String())
 	lines := strings.Split(out, "\n")
+	// Row 0 is a legitimate answer, not "not found", so presence needs its own
+	// flag. Guessing from the index alone lets a row go missing unnoticed and
+	// then satisfies the ordering check with a row that was never drawn.
 	var fj, cafe int
+	var fjFound, cafeFound bool
 	for i, l := range lines {
 		if strings.Contains(l, "fj ") && strings.Contains(l, "fj 0.6.0") {
-			fj = i
+			fj, fjFound = i, true
 		}
 		if strings.Contains(l, "cafe") && strings.Contains(l, "cafe 0.6.0") {
-			cafe = i
+			cafe, cafeFound = i, true
 		}
 	}
-	if fj == 0 && cafe == 0 {
+	if !fjFound || !cafeFound {
 		t.Fatalf("could not find both settled rows:\n%s", out)
 	}
 	if fj > cafe {
@@ -178,10 +205,14 @@ func stripANSI(s string) string {
 }
 
 // newDetectForTest builds a Detect that believes it owns a terminal.
+//
+// It starts the animation for real rather than faking the running flag, because
+// a Detect that only claims to be running has no goroutine for Stop to wait for,
+// and that wait is the whole point of Stop. A test that wants the goroutine gone
+// must call Stop, which every test here does.
 func newDetectForTest(out *fakeTerminal, labels []string) *Detect {
 	d := NewDetect(out, labels)
 	d.enabled = true
-	d.running = true
-	d.done = make(chan struct{})
+	d.Start()
 	return d
 }

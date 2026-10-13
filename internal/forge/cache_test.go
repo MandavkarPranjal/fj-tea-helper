@@ -222,6 +222,12 @@ func TestReadCacheDegradesOnBadInput(t *testing.T) {
 	}
 
 	t.Run("missing file", func(t *testing.T) {
+		// The subtests above each leave their malformed file behind, so this one
+		// has to remove it or it reads the previous case's bytes and never reaches
+		// the error path it is meant to cover.
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("could not remove the malformed memo: %v", err)
+		}
 		if got := len(readCache().Entries); got != 0 {
 			t.Errorf("read %d entries from a file that does not exist", got)
 		}
@@ -261,6 +267,10 @@ func TestWriteCacheIsPrivateAndAtomic(t *testing.T) {
 func TestCacheDegradesWhenThereIsNowhereToStore(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", "")
 	t.Setenv("HOME", "")
+	// Windows consults %LocalAppData% first and ignores the two above, so clearing
+	// only those left the assertion failing there for a reason that has nothing to
+	// do with the code under test.
+	t.Setenv("LOCALAPPDATA", "")
 	old := detectTTL
 	t.Cleanup(func() { detectTTL = old })
 
@@ -307,5 +317,161 @@ func TestDetectIsServedFromTheMemoWhenWarm(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
 		t.Errorf("a warm run took %v; the slowest memoised backend alone would be 400ms", elapsed)
+	}
+}
+
+// Detection looks up from one snapshot while other goroutines accumulate results
+// into another. Those two must not share a map: a concurrent write to a map being
+// read is a runtime throw, not a lost update, and it only shows up under load —
+// which is why this runs the stream the way it really runs.
+func TestDetectStreamDoesNotShareTheCacheMap(t *testing.T) {
+	isolateCache(t)
+	// A wide, slow, mixed workload: every backend probes, so several goroutines
+	// store at once while others look up.
+	backends := make([]Backend, 12)
+	for i := range backends {
+		backends[i] = stagedBackend{
+			Tool_name: Tool(string(rune('a'+i%5)) + "-backend"),
+			Delay:     time.Duration(i%4) * time.Millisecond,
+			User:      "anna",
+		}
+	}
+	for range 20 {
+		for r := range detectStream(t.Context(), backends) {
+			_ = r
+		}
+	}
+}
+
+// A re-probe replaces the entry that is already there without changing how many
+// entries exist, so detecting "did anything change" by comparing counts never
+// noticed. The symptom is a memo that is refreshed in memory but never on disk:
+// its timestamp stays old, so it is stale again the instant it is written, and a
+// backend installed since the last run is never recorded at all.
+func TestDetectStreamRefreshesAnEntryThatAlreadyExisted(t *testing.T) {
+	dir := isolateCache(t)
+	b := stagedBackend{Tool_name: ToolFj, User: "anna"}
+
+	// An entry that is present but stale, which is the case a length check misses.
+	writeCache(cacheFile{}.store(b, Detection{
+		Verified: true,
+		At:       time.Now().Add(-2 * DefaultCacheTTL),
+	}))
+	path := filepath.Join(dir, "fth", "detect.json")
+
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Well past mtime resolution, so a rewritten file is distinguishable.
+	time.Sleep(10 * time.Millisecond)
+
+	for range detectStream(t.Context(), []Backend{b}) {
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().After(before.ModTime()) {
+		t.Errorf("the memo was not rewritten (mtime %v, was %v); a stale entry is refreshed in memory but not on disk",
+			after.ModTime(), before.ModTime())
+	}
+	if _, ok := readCache().lookup(b, DefaultCacheTTL); !ok {
+		t.Fatal("the refreshed memo is not usable; it will be re-probed every run")
+	}
+}
+
+// Two fth runs overlap often enough — a terminal multiplexer starting several
+// repos at once — and each holds the snapshot it read at startup. Writing that
+// snapshot back wholesale would discard what the other run measured.
+func TestWriteCacheMergesRatherThanOverwrites(t *testing.T) {
+	isolateCache(t)
+	fj := stagedBackend{Tool_name: ToolFj, User: "anna"}
+	gh := stagedBackend{Tool_name: ToolGh, User: "bob"}
+
+	// Our snapshot, which knows nothing about gh.
+	mine := cacheFile{}.store(fj, Detection{Verified: true, Users: map[string]string{"fj.example": "anna"}, At: time.Now()})
+	// What another process wrote in the meantime.
+	writeCache(cacheFile{}.store(gh, Detection{Verified: true, Users: map[string]string{"gh.example": "bob"}, At: time.Now()}))
+
+	writeCache(mine)
+
+	file := readCache()
+	if _, ok := file.lookup(fj, DefaultCacheTTL); !ok {
+		t.Error("our own measurement was lost")
+	}
+	if _, ok := file.lookup(gh, DefaultCacheTTL); !ok {
+		t.Error("another process's measurement was discarded by the merge")
+	}
+}
+
+// Where two runs measured the same backend, the newer measurement must win —
+// otherwise the older one is written back and the memo goes backwards in time.
+func TestWriteCacheKeepsTheNewerMeasurement(t *testing.T) {
+	isolateCache(t)
+	b := stagedBackend{Tool_name: ToolFj, User: "anna"}
+
+	old := Detection{Verified: false, Notes: []string{"stale failure"}, At: time.Now().Add(-time.Hour)}
+	newer := Detection{Verified: true, Users: map[string]string{"fj.example": "anna"}, At: time.Now()}
+
+	writeCache(cacheFile{}.store(b, old))
+	writeCache(cacheFile{}.store(b, newer))
+
+	got, ok := readCache().lookup(b, DefaultCacheTTL)
+	if !ok || !got.Verified {
+		t.Errorf("lookup returned %+v, want the newer successful measurement", got)
+	}
+}
+
+// Installing a CLI changes which program PATH resolves, so a memo keyed only by
+// tool name would hand back the previous program's logins until it expired.
+func TestCacheKeyFollowsPath(t *testing.T) {
+	t.Setenv("PATH", "/one")
+	first := cacheKey(tryBackend{})
+	t.Setenv("PATH", "/two")
+	second := cacheKey(tryBackend{})
+
+	if first == second {
+		t.Errorf("key %q is the same for two different PATHs; a newly installed try would report the old one's logins", first)
+	}
+	t.Setenv("PATH", "/one")
+	if again := cacheKey(tryBackend{}); again != first {
+		t.Errorf("key is not stable for one PATH: %q then %q", first, again)
+	}
+	// An explicit binary does not depend on PATH at all, so it must not move when
+	// PATH does.
+	explicit := cacheKey(tryBackend{bin: "/opt/trylle-cli"})
+	t.Setenv("PATH", "/two")
+	if again := cacheKey(tryBackend{bin: "/opt/trylle-cli"}); again != explicit {
+		t.Errorf("an explicit -try-bin key moved with PATH: %q then %q", explicit, again)
+	}
+}
+
+// clone must produce a map that is genuinely separate. This is the invariant the
+// concurrent-map panic rested on, asserted directly: assigning a struct holding a
+// map copies the header, not the map, so the obvious `fresh := file` shares
+// storage and every store is a write to the map other goroutines are reading.
+//
+// A race detector run cannot reliably demonstrate that on its own — it needs the
+// unlucky interleaving, and a missing race report proves nothing. Asserting the
+// aliasing itself does.
+func TestCloneDoesNotShareTheEntryMap(t *testing.T) {
+	original := cacheFile{}.store(stagedBackend{Tool_name: ToolFj},
+		Detection{Verified: true, At: time.Now()})
+	before := len(original.Entries)
+
+	c := original.clone()
+	c.store(stagedBackend{Tool_name: ToolGh}, Detection{Verified: true, At: time.Now()})
+
+	if got := len(original.Entries); got != before {
+		t.Errorf("storing into the clone changed the original: %d entries, want %d", got, before)
+	}
+	if _, leaked := original.Entries[cacheKey(stagedBackend{Tool_name: ToolGh})]; leaked {
+		t.Error("the clone shares the original's map; a concurrent store is a concurrent map write")
+	}
+	// And the clone still carries what it was made from.
+	if got := len(c.Entries); got != 2 {
+		t.Errorf("clone has %d entries, want 2", got)
 	}
 }

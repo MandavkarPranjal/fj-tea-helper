@@ -51,9 +51,17 @@ func DetectStream(ctx context.Context, tools []Tool, opts ...Option) (<-chan Res
 func detectStream(ctx context.Context, backends []Backend) <-chan Result {
 	file := readCache()
 	ttl := detectTTL
+	// fresh starts as a copy rather than an alias. cacheFile holds a map, so
+	// assigning the struct copies the map *header*, not the map: storing into
+	// fresh would otherwise write to the very map every other backend's lookup is
+	// reading, and Go maps are not safe for concurrent use — that is a panic, not
+	// just a wrong answer. Copying up front also means file stays immutable for
+	// the whole run, which is what lets lookup stay lock-free.
+	fresh := file.clone()
+
 	var (
 		mu    sync.Mutex
-		fresh = file
+		dirty bool
 	)
 
 	// Buffered for every result, so a slow backend can never block a fast one
@@ -74,6 +82,7 @@ func detectStream(ctx context.Context, backends []Backend) <-chan Result {
 			if !cached {
 				mu.Lock()
 				fresh = fresh.store(b, c.detection())
+				dirty = true
 				mu.Unlock()
 			}
 			ch <- Result{Index: i, Candidate: c}
@@ -87,10 +96,18 @@ func detectStream(ctx context.Context, backends []Backend) <-chan Result {
 		// against process exit, and the memo silently never lands — which looks
 		// exactly like the memo not working.
 		//
-		// Only rewritten when something was actually probed, so a fully cached run
-		// does not touch the disk at all.
-		if len(fresh.Entries) != len(file.Entries) {
-			writeCache(fresh)
+		// Keyed off whether anything was actually probed, rather than off whether the
+		// entry count changed. Re-probing a backend whose entry already exists
+		// replaces that entry without changing how many there are, so a length
+		// comparison never noticed: the memo kept its old timestamp, went stale
+		// again immediately, and a newly installed backend's key never reached disk
+		// at all.
+		mu.Lock()
+		written := fresh
+		needsWrite := dirty
+		mu.Unlock()
+		if needsWrite {
+			writeCache(written)
 		}
 		close(ch)
 	}()

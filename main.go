@@ -637,6 +637,30 @@ func repoNameForDir(dir string) (string, error) {
 //
 // The list is already narrowed by -tool/-host before it gets here, and the
 // first entry is the one fth would have picked on its own.
+func pickTarget(ask *prompt.Prompter, targets []forge.Target) (forge.Target, error) {
+	if len(targets) == 1 || !ask.Interactive() {
+		return targets[0], nil
+	}
+	opts := make([]prompt.Option, 0, len(targets))
+	for _, t := range targets {
+		opts = append(opts, prompt.Option{
+			Label:  fmt.Sprintf("%s  %s", ui.Pad(string(t.Tool()), 4), t.Login.Name),
+			Value:  t.ID(),
+			Detail: t.Account,
+		})
+	}
+	got, err := ask.Select("Create the repository on", opts, targets[0].ID())
+	if err != nil {
+		return forge.Target{}, err
+	}
+	for _, t := range targets {
+		if t.ID() == got {
+			return t, nil
+		}
+	}
+	return targets[0], nil
+}
+
 // toolLabels names the backends being probed, in the order they will be drawn.
 func toolLabels(tools []forge.Tool) []string {
 	out := make([]string, len(tools))
@@ -672,30 +696,6 @@ func collectDetect(ctx context.Context, tools []forge.Tool, det *progress.Detect
 // display showed and what -list prints cannot drift apart. It reads only what
 // probe recorded, so it costs no process.
 func detectDetail(c forge.Candidate) string { return c.Status() }
-
-func pickTarget(ask *prompt.Prompter, targets []forge.Target) (forge.Target, error) {
-	if len(targets) == 1 || !ask.Interactive() {
-		return targets[0], nil
-	}
-	opts := make([]prompt.Option, 0, len(targets))
-	for _, t := range targets {
-		opts = append(opts, prompt.Option{
-			Label:  fmt.Sprintf("%s  %s", ui.Pad(string(t.Tool()), 4), t.Login.Name),
-			Value:  t.ID(),
-			Detail: t.Account,
-		})
-	}
-	got, err := ask.Select("Create the repository on", opts, targets[0].ID())
-	if err != nil {
-		return forge.Target{}, err
-	}
-	for _, t := range targets {
-		if t.ID() == got {
-			return t, nil
-		}
-	}
-	return targets[0], nil
-}
 
 // askForRemoteName prompts for a name for the new remote, offering one
 // derived from the forge host and skipping names already in use. Pressing

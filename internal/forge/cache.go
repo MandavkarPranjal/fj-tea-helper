@@ -1,6 +1,8 @@
 package forge
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -76,17 +78,38 @@ func cachePath() string {
 
 // cacheKey identifies the backend a Detection was measured for.
 //
-// Only the explicit binary overrides can change which program is driven, so
-// those are all that belong in the key; everything else about a tool is fixed.
+// It has to capture everything that decides *which program gets driven*, because
+// a key that does not makes the memo answer about a different backend than the
+// one about to run. That is the explicit -cafe-bin/-try-bin overrides, and it is
+// also PATH: every one of these tools is found on PATH, and `try` in particular
+// is only accepted after being run to prove it is the Trylle CLI at all. Install
+// a different program under the same name, or reorder PATH, and the memo would
+// otherwise serve another executable's logins and version for the whole TTL.
+//
+// PATH is hashed rather than embedded, so the key stays short and the memo on
+// disk does not become a listing of the user's directories.
 func cacheKey(b Backend) string {
 	switch v := b.(type) {
 	case cafeBackend:
-		return "cafe\x00" + v.bin
+		if v.bin != "" {
+			return "cafe\x00" + v.bin
+		}
 	case tryBackend:
-		return "try\x00" + v.bin
-	default:
-		return string(b.Tool()) + "\x00"
+		if v.bin != "" {
+			return "try\x00" + v.bin
+		}
 	}
+	return string(b.Tool()) + "\x00" + pathFingerprint()
+}
+
+// pathFingerprint is a short, stable digest of PATH, or "" when PATH is unset.
+func pathFingerprint() string {
+	p := os.Getenv("PATH")
+	if p == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(p))
+	return hex.EncodeToString(sum[:8])
 }
 
 // readCache loads the memo, treating any problem as an empty one. A corrupt,
@@ -111,6 +134,38 @@ func readCache() cacheFile {
 	return f
 }
 
+// clone returns a copy whose Entries map is genuinely separate. Assigning the
+// struct alone copies the map header, not the map, so storing into the copy
+// would otherwise write to the map other goroutines are reading.
+func (c cacheFile) clone() cacheFile {
+	out := cacheFile{Version: c.Version}
+	if c.Entries != nil {
+		out.Entries = make(map[string]cacheEntry, len(c.Entries))
+		for k, v := range c.Entries {
+			out.Entries[k] = v
+		}
+	}
+	return out
+}
+
+// merge returns the union of c and latest, keeping the newer measurement where
+// both measured the same backend. Two fth processes overlap often enough, and
+// each holds the snapshot it read at startup; writing that snapshot back
+// wholesale would discard what the other run measured.
+func (c cacheFile) merge(latest cacheFile) cacheFile {
+	out := latest.clone()
+	if out.Entries == nil {
+		out.Entries = map[string]cacheEntry{}
+	}
+	for k, v := range c.Entries {
+		if cur, ok := out.Entries[k]; !ok || !cur.Data.At.After(v.Data.At) {
+			out.Entries[k] = v
+		}
+	}
+	out.Version = cacheVersion
+	return out
+}
+
 // writeCache persists the memo. Every failure is ignored for the same reason
 // readCache treats them as empty: a memo that cannot be saved costs time, not
 // correctness.
@@ -119,23 +174,48 @@ func writeCache(f cacheFile) {
 	if p == "" {
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
-	raw, err := json.Marshal(f)
+	// MkdirAll does not tighten an existing directory, so enforce private
+	// permissions in case it was created shared or writable.
+	_ = os.Chmod(dir, 0o700)
+	if fi, err := os.Lstat(dir); err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return
+	}
+	// Merge with whatever another process wrote since we read, so one invocation
+	// does not discard another's results. Where both measured the same backend
+	// the newer measurement wins.
+	merged := f.merge(readCache())
+	raw, err := json.Marshal(merged)
 	if err != nil {
 		return
 	}
 	// 0600: the file names the accounts and hosts the user is signed into. It
 	// holds no credentials — those are redacted out of everything fth captures —
 	// but the list of instances is still nobody else's business.
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	//
+	// A fixed temporary name would let another user plant a symlink and redirect
+	// this write, so create a fresh file without following any pre-existing path.
+	tmp, err := os.CreateTemp(dir, "detect-*.tmp")
+	if err != nil {
+		return
+	}
+	tmpName := tmp.Name()
+	_ = tmp.Chmod(0o600)
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
 		return
 	}
 	// Rename is atomic, so a run that is interrupted mid-write cannot leave a
 	// half-written file that the next run would have to reject.
-	_ = os.Rename(tmp, p)
+	_ = os.Rename(tmpName, p)
 }
 
 // lookup returns a fresh measurement for b, if there is one.

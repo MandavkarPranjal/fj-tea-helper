@@ -72,6 +72,31 @@ func (t tryBackend) exe(ctx context.Context) string {
 	return resolveTryExe(ctx)
 }
 
+// tryExeCandidates returns the candidate paths still worth resolving, and the
+// rejected `try` path if there is one.
+//
+// The rejection is reported rather than recomputed because checking it is the
+// expensive part: proving a `try` on PATH is not the Trylle CLI means running
+// it with --version. Available and UnavailableNote are both called for every
+// detection, and both used to pay for that proof, so a name collision cost two
+// process spawns to learn one fact.
+func (t tryBackend) tryExeCandidates(ctx context.Context) (paths []string, rejected string) {
+	for _, name := range tryCandidates {
+		p, err := lookPath(name)
+		if err != nil {
+			continue
+		}
+		if isTrylleCLI(ctx, p) {
+			paths = append(paths, p)
+			continue
+		}
+		if name == tryCandidates[len(tryCandidates)-1] {
+			rejected = p
+		}
+	}
+	return paths, rejected
+}
+
 // resolveTryExe finds the first name on PATH that is genuinely the Trylle CLI,
 // remembering the answer for the rest of the run.
 //
@@ -88,35 +113,37 @@ func (t tryBackend) exe(ctx context.Context) string {
 // The cache is keyed by PATH because PATH is the only thing that can change the
 // answer, which also keeps it honest under tests that install stubs.
 var (
-	tryExeMu   sync.Mutex
-	tryExeKey  string
-	tryExePath string
-	tryExeOK   bool
+	tryExeMu       sync.Mutex
+	tryExeKey      string
+	tryExePath     string
+	tryExeRejected string
+	tryExeOK       bool
 )
 
 func resolveTryExe(ctx context.Context) string {
+	path, _ := resolveTryExeFull(ctx)
+	return path
+}
+
+// resolveTryExeFull resolves the binary and also reports the `try` that was found
+// and turned down, so UnavailableNote can explain the absence without running
+// that same binary a second time.
+func resolveTryExeFull(ctx context.Context) (path, rejected string) {
 	key := os.Getenv("PATH")
 
 	tryExeMu.Lock()
 	defer tryExeMu.Unlock()
 	if tryExeOK && tryExeKey == key {
-		return tryExePath
+		return tryExePath, tryExeRejected
 	}
-	path := ""
-	for _, name := range tryCandidates {
-		p, err := lookPath(name)
-		if err != nil {
-			continue
-		}
-		if isTrylleCLI(ctx, p) {
-			path = p
-			break
-		}
+	paths, rejected := tryBackend{}.tryExeCandidates(ctx)
+	if len(paths) > 0 {
+		path = paths[0]
 	}
 	if ctx.Err() == nil {
-		tryExeKey, tryExePath, tryExeOK = key, path, true
+		tryExeKey, tryExePath, tryExeRejected, tryExeOK = key, path, rejected, true
 	}
-	return path
+	return path, rejected
 }
 
 // exec runs the Trylle CLI, refusing to do so if no genuine binary was found.
@@ -238,12 +265,15 @@ func (t tryBackend) UnavailableNote(ctx context.Context) string {
 	if t.bin != "" {
 		return ""
 	}
-	p, err := lookPath(tryCandidates[len(tryCandidates)-1])
-	if err != nil || isTrylleCLI(ctx, p) {
+	// Reuses the resolution Available already did. Re-proving the collision here
+	// would spawn `try --version` a second time in the same detection, for a
+	// verdict that cannot have changed.
+	_, rejected := resolveTryExeFull(ctx)
+	if rejected == "" {
 		return ""
 	}
 	return fmt.Sprintf("a different program called `try` is on PATH at %s; "+
-		"install the Trylle CLI or point fth at it with -try-bin", p)
+		"install the Trylle CLI or point fth at it with -try-bin", rejected)
 }
 
 // tryRepoJSON is the repository object `try repo create --json` returns. The

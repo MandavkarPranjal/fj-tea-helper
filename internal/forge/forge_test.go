@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -242,8 +244,20 @@ type slowBackend struct {
 	Tool_name Tool
 	// Delay is applied to Logins and to each WhoAmI.
 	Delay time.Duration
-	// Dead Host is the one login whose verification always fails.
-	Dead string
+	// Dead hosts are logins whose verification always fails.
+	Dead map[string]bool
+	// WhoAmIDelay overrides the per-login delay, so a test can make logins finish
+	// in an order other than the one they were listed in.
+	WhoAmIDelay func(login string) time.Duration
+}
+
+func (b slowBackend) isDead(login string) bool { return b.Dead[login] }
+
+func (b slowBackend) whoAmIDelay(login string) time.Duration {
+	if b.WhoAmIDelay != nil {
+		return b.WhoAmIDelay(login)
+	}
+	return b.Delay
 }
 
 func (b slowBackend) Tool() Tool                         { return b.Tool_name }
@@ -273,14 +287,30 @@ func (b slowBackend) Logins(ctx context.Context) ([]Login, error) {
 	if err := wait(ctx, b.Delay); err != nil {
 		return nil, err
 	}
-	return []Login{{Name: "a.example"}, {Name: "b.example"}, {Name: b.Dead}}, nil
+	// a.example and b.example are always present, so a fixture that marks them dead
+	// does not end up listing the same login twice. Sorted, because the whole point
+	// is that notes come back in login order.
+	set := map[string]bool{"a.example": true, "b.example": true}
+	for n := range b.Dead {
+		set[n] = true
+	}
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	logins := make([]Login, len(names))
+	for i, n := range names {
+		logins[i] = Login{Name: n}
+	}
+	return logins, nil
 }
 
 func (b slowBackend) WhoAmI(ctx context.Context, login string) (string, error) {
-	if err := wait(ctx, b.Delay); err != nil {
+	if err := wait(ctx, b.whoAmIDelay(login)); err != nil {
 		return "", err
 	}
-	if login == b.Dead {
+	if b.isDead(login) {
 		return "", fmt.Errorf("host is unreachable")
 	}
 	return "user-" + login[0:1], nil
@@ -301,22 +331,64 @@ func TestProbeVerifiesLoginsConcurrently(t *testing.T) {
 	if !c.Verified {
 		t.Error("a backend with a working login must be Verified")
 	}
-	// Two delays serial: Logins, then three WhoAmI. Concurrent: Logins, then one
-	// WhoAmI. The threshold sits between the two.
-	if limit := 5 * delay; elapsed > limit {
-		t.Errorf("probe took %v, want well under %v (logins are not concurrent)", elapsed, limit)
+	// Concurrent is two delays: Logins, then the three WhoAmI at once. Serial is
+	// four. The threshold sits between them, and deliberately closer to the
+	// concurrent figure — a five-delay limit would have let the serial
+	// implementation, at four delays, pass this test while proving nothing.
+	if limit := 3 * delay; elapsed > limit {
+		t.Errorf("probe took %v, want under %v (logins are not concurrent)", elapsed, limit)
 	}
 }
 
 // Concurrency must not cost determinism: the users map and the notes have to be
 // assembled in login order, so two runs against the same hosts agree.
 func TestProbeOutputIsOrderedNotCompletionOrdered(t *testing.T) {
-	b := slowBackend{Tool_name: ToolFj, Delay: 20 * time.Millisecond, Dead: "c.example"}
+	// Three failures, and the one listed first is the slowest to answer. A single
+	// failure could not detect this at all — there is only one note, so it looks
+	// ordered whether or not it is — and this ordering is only observable because
+	// completion order is the reverse of login order.
+	b := slowBackend{
+		Tool_name: ToolFj,
+		Delay:     10 * time.Millisecond,
+		Dead: map[string]bool{
+			"a.example": true,
+			"b.example": true,
+			"c.example": true,
+		},
+		WhoAmIDelay: func(login string) time.Duration {
+			// a.example is listed first but answers last, so completion order is the
+			// reverse of login order.
+			if login == "a.example" {
+				return 40 * time.Millisecond
+			}
+			return 5 * time.Millisecond
+		},
+	}
+
 	first := probe(context.Background(), b)
+	want := []string{"a.example", "b.example", "c.example"}
+	if len(first.Notes) != len(want) {
+		t.Fatalf("got %d notes, want %d: %q", len(first.Notes), len(want), first.Notes)
+	}
+	for i, host := range want {
+		if !strings.Contains(first.Notes[i], host) {
+			t.Errorf("Notes[%d] = %q, want it to name %s", i, first.Notes[i], host)
+		}
+	}
+	// The reason has to survive too, or the user cannot tell which of their hosts
+	// is broken.
+	for i, note := range first.Notes {
+		if !strings.Contains(note, "unreachable") {
+			t.Errorf("Notes[%d] = %q, want the reason", i, note)
+		}
+	}
+
+	// Repeated runs must agree exactly. Comparing only Notes[0] was not enough to
+	// catch reordering of the ones after it.
 	for range 5 {
 		got := probe(context.Background(), b)
-		if len(got.Notes) != len(first.Notes) || got.Notes[0] != first.Notes[0] {
-			t.Fatalf("notes vary between runs: %q vs %q", got.Notes, first.Notes)
+		if !slices.Equal(got.Notes, first.Notes) {
+			t.Fatalf("notes vary between runs:\n got %q\nwant %q", got.Notes, first.Notes)
 		}
 		for name, user := range first.Users {
 			if got.Users[name] != user {
@@ -324,25 +396,29 @@ func TestProbeOutputIsOrderedNotCompletionOrdered(t *testing.T) {
 			}
 		}
 	}
-	// The failing login is named in the note, with the reason, or the user
-	// cannot tell which of their hosts is the broken one.
-	if !strings.Contains(first.Notes[0], "c.example") ||
-		!strings.Contains(first.Notes[0], "unreachable") {
-		t.Errorf("note = %q, want it to name the dead host and why", first.Notes[0])
-	}
 }
 
 // A backend that never answers must not hold the run open: the probe has its own
 // deadline, so an absent host costs the budget rather than the whole invocation.
 func TestProbeHonoursItsDeadline(t *testing.T) {
+	// The caller's context is deliberately left alive. The point is probe's *own*
+	// deadline, and a short deadline on the caller's context made this pass even if
+	// probeTimeout were never applied at all.
+	old := probeTimeout
+	probeTimeout = 80 * time.Millisecond
+	t.Cleanup(func() { probeTimeout = old })
+
 	b := slowBackend{Tool_name: ToolFj, Delay: time.Hour}
-	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
-	defer cancel()
 
 	start := time.Now()
-	c := probe(ctx, b)
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("probe took %v despite a cancelled context", elapsed)
+	c := probe(context.Background(), b)
+	elapsed := time.Since(start)
+
+	// Generous upper bound: the deadline is 80ms, but a loaded machine is allowed
+	// to take its time reporting it. A missing deadline means an hour, not a
+	// slightly slow return.
+	if limit := 5 * time.Second; elapsed > limit {
+		t.Errorf("probe took %v, so it ignored its own %v deadline", elapsed, probeTimeout)
 	}
 	// Nothing verified is correct here: the point is that it returned at all.
 	if c.Verified {
@@ -358,9 +434,14 @@ type countingBackend struct {
 	avail     int
 }
 
-func (b *countingBackend) Tool() Tool                         { return b.Tool_name }
-func (b *countingBackend) LoginHint() string                  { return "test auth login" }
-func (b *countingBackend) Available(ctx context.Context) bool { return true }
+func (b *countingBackend) Tool() Tool        { return b.Tool_name }
+func (b *countingBackend) LoginHint() string { return "test auth login" }
+func (b *countingBackend) Available(ctx context.Context) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.avail++
+	return true
+}
 func (b *countingBackend) Version(ctx context.Context) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -387,27 +468,44 @@ func TestStatusDoesNotReprobe(t *testing.T) {
 	if got := b.versions; got != 1 {
 		t.Fatalf("probe ran Version %d times, want 1", got)
 	}
+	if got := b.avail; got != 1 {
+		t.Fatalf("probe ran Available %d times, want 1", got)
+	}
+
 	if got := c.Status(); got != "fj 1.0.0" {
 		t.Errorf("Status = %q, want %q", got, "fj 1.0.0")
 	}
 	for range 3 {
 		_ = c.Status()
 	}
+	// Both, not just Version. Counting only Version would have passed even if
+	// Status went on consulting Available for every row it printed, which is the
+	// other half of what this test exists to pin down.
 	if got := b.versions; got != 1 {
 		t.Errorf("Status ran Version %d times in total, want 1", got)
+	}
+	if got := b.avail; got != 1 {
+		t.Errorf("Status ran Available %d times in total, want 1", got)
 	}
 }
 
 // A Candidate nobody probed must still answer honestly rather than reporting a
 // zero-value installed flag as "not installed".
 func TestStatusOnUnprobedCandidate(t *testing.T) {
-	b, err := Discover(ToolFj)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A fake, not Discover(ToolFj): that hands back the real fj backend, so the
+	// outcome depended on whether fj happened to be installed on the machine
+	// running the suite. Here it is installed and verified by construction.
+	b := &countingBackend{Tool_name: ToolFj}
 	c := Candidate{Backend: b, Verified: true}
+
 	if got := c.Status(); got == "not installed" {
 		t.Error("an unprobed Candidate must ask the backend, not assume absence")
+	}
+	// Asking about availability is the fallback this case allows. The version has
+	// no recorded value to fall back on, so it has to come from the backend too —
+	// otherwise Status prints a bare tool name with nothing after it.
+	if got := c.Status(); got != "fj 1.0.0" {
+		t.Errorf("Status = %q, want %q", got, "fj 1.0.0")
 	}
 }
 
