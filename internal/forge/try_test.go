@@ -369,6 +369,36 @@ func TestTryPrefersUnambiguousName(t *testing.T) {
 	}
 }
 
+// Accepting the unambiguous name settles the question, so the fallback must not
+// be run afterwards.
+//
+// Checking the returned path is not enough on its own: a resolution that probes
+// both names picks the right binary and still executed `try --version` on the
+// way there. On a real machine that is an unrelated program — an "ephemeral
+// workspace manager" that fth has just decided it does not need, spawned to
+// answer a question its own result already answered.
+func TestTryDoesNotRunTheFallbackOnceAccepted(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "trylle-cli"), []byte(stubTry), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	// The impostor records that it ran, which is what this test asserts on.
+	marker := filepath.Join(dir, "impostor-ran")
+	impostor := "#!/bin/sh\ntouch " + marker + "\necho 'try v1.10.1 - ephemeral workspace manager'\n"
+	if err := os.WriteFile(filepath.Join(dir, "try"), []byte(impostor), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("PATH", dir)
+
+	tb := tryBackend{}
+	if got := tb.exe(context.Background()); got != filepath.Join(dir, "trylle-cli") {
+		t.Fatalf("exe() = %q, want the trylle-cli on PATH", got)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the unrelated `try` on PATH was executed even though trylle-cli was accepted")
+	}
+}
+
 // An explicit -try-bin is trusted as given: the user named that path on
 // purpose, so fth does not second-guess it.
 func TestTryExplicitBinSkipsDetection(t *testing.T) {
