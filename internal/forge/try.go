@@ -72,29 +72,37 @@ func (t tryBackend) exe(ctx context.Context) string {
 	return resolveTryExe(ctx)
 }
 
-// tryExeCandidates returns the candidate paths still worth resolving, and the
-// rejected `try` path if there is one.
+// resolveExe returns the binary to drive, and the rejected `try` path if there
+// is one.
+//
+// It stops at the first candidate that qualifies. That matters most for the
+// unambiguous name: once `trylle-cli` has been accepted, the fallback exists only
+// to be used when nothing better does, and probing it anyway would run an
+// unrelated program on the user's PATH — a process fth has just decided it does
+// not need, spawned to answer a question whose answer is already fixed.
 //
 // The rejection is reported rather than recomputed because checking it is the
 // expensive part: proving a `try` on PATH is not the Trylle CLI means running
 // it with --version. Available and UnavailableNote are both called for every
 // detection, and both used to pay for that proof, so a name collision cost two
 // process spawns to learn one fact.
-func (t tryBackend) tryExeCandidates(ctx context.Context) (paths []string, rejected string) {
+func resolveExe(ctx context.Context) (path, rejected string) {
+	ambiguous := tryCandidates[len(tryCandidates)-1]
 	for _, name := range tryCandidates {
 		p, err := lookPath(name)
 		if err != nil {
 			continue
 		}
 		if isTrylleCLI(ctx, p) {
-			paths = append(paths, p)
-			continue
+			return p, ""
 		}
-		if name == tryCandidates[len(tryCandidates)-1] {
+		// Only the fallback name can be a collision worth explaining: the
+		// preferred name is accepted on its path alone, so it is never rejected.
+		if name == ambiguous {
 			rejected = p
 		}
 	}
-	return paths, rejected
+	return "", rejected
 }
 
 // resolveTryExe finds the first name on PATH that is genuinely the Trylle CLI,
@@ -136,10 +144,7 @@ func resolveTryExeFull(ctx context.Context) (path, rejected string) {
 	if tryExeOK && tryExeKey == key {
 		return tryExePath, tryExeRejected
 	}
-	paths, rejected := tryBackend{}.tryExeCandidates(ctx)
-	if len(paths) > 0 {
-		path = paths[0]
-	}
+	path, rejected = resolveExe(ctx)
 	if ctx.Err() == nil {
 		tryExeKey, tryExePath, tryExeRejected, tryExeOK = key, path, rejected, true
 	}

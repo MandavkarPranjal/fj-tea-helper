@@ -14,10 +14,16 @@ import (
 // the developer's own memo, and detectTTL is a package global that other tests
 // call DisableCache on, so a cache test that forgot to restore it would leave the
 // rest of the suite probing nothing.
+//
+// LOCALAPPDATA is set as well because it is not redundant: os.UserCacheDir reads
+// XDG_CACHE_HOME on Unix but %LocalAppData% on Windows, so with only the former
+// redirected every one of these tests would have used — and rewritten — the real
+// cache on that platform.
 func isolateCache(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", dir)
+	t.Setenv("LOCALAPPDATA", dir)
 	old := detectTTL
 	t.Cleanup(func() { detectTTL = old })
 	detectTTL = DefaultCacheTTL
