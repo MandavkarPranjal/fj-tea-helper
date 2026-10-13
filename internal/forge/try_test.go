@@ -383,15 +383,31 @@ func TestTryDoesNotRunTheFallbackOnceAccepted(t *testing.T) {
 		t.Fatalf("write stub: %v", err)
 	}
 	// The impostor records that it ran, which is what this test asserts on.
+	//
+	// The marker is created by a shell builtin, not by `touch`: PATH below is
+	// this directory alone, so an external command would fail to resolve and the
+	// marker would stay absent whether or not the impostor ran — the assertion
+	// would pass against the very bug it exists to catch.
 	marker := filepath.Join(dir, "impostor-ran")
-	impostor := "#!/bin/sh\ntouch " + marker + "\necho 'try v1.10.1 - ephemeral workspace manager'\n"
+	impostor := "#!/bin/sh\n: > '" + marker + "'\necho 'try v1.10.1 - ephemeral workspace manager'\n"
 	if err := os.WriteFile(filepath.Join(dir, "try"), []byte(impostor), 0o755); err != nil {
 		t.Fatalf("write stub: %v", err)
 	}
 	t.Setenv("PATH", dir)
+	ctx := context.Background()
+
+	// Positive control: the marker really is written by a stub run under this
+	// PATH, so its absence below means the impostor was never executed.
+	run(ctx, minEnv(), filepath.Join(dir, "try"), "--version")
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the marker is not written even when the impostor runs: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatalf("reset marker: %v", err)
+	}
 
 	tb := tryBackend{}
-	if got := tb.exe(context.Background()); got != filepath.Join(dir, "trylle-cli") {
+	if got := tb.exe(ctx); got != filepath.Join(dir, "trylle-cli") {
 		t.Fatalf("exe() = %q, want the trylle-cli on PATH", got)
 	}
 	if _, err := os.Stat(marker); err == nil {

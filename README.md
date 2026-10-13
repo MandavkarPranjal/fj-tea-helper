@@ -337,9 +337,9 @@ the first letter of a row to jump straight to it, Enter to choose.
 How the list is built:
 
 1. Show a progress row per CLI while the probes run, settling each row as that
-   CLI answers, so the backends do not all appear at once when the slowest one
-   finally lands. The display is erased once detection is done, before the
-   instance picker is drawn.
+   CLI answers, so the wait is reported per backend instead of as one silent
+   pause. The display is erased once detection is done; the instance list itself
+   is drawn afterwards, from what the finished probes found.
 2. Run `fj auth list` / `tea logins list -o json` / `cafe auth status --json` /
    `gh auth status --json hosts` / `try auth status --json` to find configured
    logins.
