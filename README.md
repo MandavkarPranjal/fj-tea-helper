@@ -336,8 +336,10 @@ the first letter of a row to jump straight to it, Enter to choose.
 
 How the list is built:
 
-1. Show a row per CLI as each one answers, so the instances you are signed into
-   start appearing immediately instead of after the slowest one.
+1. Show a progress row per CLI while the probes run, settling each row as that
+   CLI answers, so the backends do not all appear at once when the slowest one
+   finally lands. The display is erased once detection is done, before the
+   instance picker is drawn.
 2. Run `fj auth list` / `tea logins list -o json` / `cafe auth status --json` /
    `gh auth status --json hosts` / `try auth status --json` to find configured
    logins.
@@ -364,11 +366,12 @@ That remaining second is network time that does not go away: each backend is a
 separate process, each opens its own connection, and every one of them pays a
 full TLS handshake. Repeating the call does not warm it up.
 
-So results are also **memoised** in `~/.cache/fth/detect.json` for 10 minutes,
-per tool and per `-cafe-bin`/`-try-bin`. A second run inside that window skips
-the probes entirely and finishes in a couple of milliseconds. The file records
-which accounts and hosts you are signed into, so it is written `0600`, and it
-holds no credentials.
+So results are also **memoised** in `fth/detect.json` inside your platform's user
+cache directory — on Linux, `~/.cache/fth/detect.json` unless `XDG_CACHE_HOME`
+points elsewhere — for 10 minutes, per tool and per `-cafe-bin`/`-try-bin`. A
+second run inside that window skips the probes entirely and finishes in a couple
+of milliseconds. The file records which accounts and hosts you are signed into,
+so it is written `0600`, and it holds no credentials.
 
 When you have just fixed a credential, run with `-no-cache` to ignore the stored
 result, re-probe every CLI, and refresh it:

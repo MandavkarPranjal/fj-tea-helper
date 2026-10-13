@@ -82,7 +82,16 @@ func (c Candidate) Status() string {
 	if !c.Verified {
 		return "installed, no working login"
 	}
-	return fmt.Sprintf("%s %s", c.Backend.Tool(), c.version)
+	// An unprobed Candidate has no recorded version, and isInstalled already
+	// covers that case by asking the backend — so asking it for the version too
+	// keeps Status honest rather than printing a bare tool name with nothing after
+	// it. Probed candidates never reach this, which is what keeps the listing free
+	// of extra processes.
+	version := c.version
+	if !c.probed {
+		version = c.Backend.Version(context.Background())
+	}
+	return fmt.Sprintf("%s %s", c.Backend.Tool(), version)
 }
 
 // Name returns the tool identifier.

@@ -146,14 +146,34 @@ func (d *Detect) Stop() {
 // caller can print its real output from the same position.
 //
 // draw() ends by stepping the cursor back up to the top of the block, so the
-// cursor is already there and nothing needs to move. What remains is to clear
-// everything from the cursor down, which is what ESC[J does.
+// cursor is already on the block's first row. Each row is then cleared with
+// eraseLine, stepping down a line at a time, and the cursor is walked back up by
+// one row per line stepped down.
 //
-// Walking the cursor up one line per row instead would be off by the height of
-// the block: the cursor is at the top, not the bottom, and stepping up from there
-// would erase whatever the shell had printed above it.
-func (d *Detect) erase(int) {
-	d.write(eraseToEnd)
+// ESC[J would be shorter, and wrong: it clears from the cursor to the bottom of
+// the terminal, not to the bottom of the block, so anything printed below the
+// display would go with it. The row count is what keeps the blast radius at the
+// display.
+//
+// Walking the cursor up one line per row from the top instead would be off by
+// the height of the block: the cursor is at the top, not the bottom, and
+// stepping up from there would erase whatever the shell had printed above it.
+func (d *Detect) erase(n int) {
+	if n <= 0 {
+		return
+	}
+	var b strings.Builder
+	b.WriteString(eraseLine)
+	for i := 1; i < n; i++ {
+		b.WriteString("\n")
+		b.WriteString(eraseLine)
+	}
+	if n > 1 {
+		// Stepping back up is what puts the cursor back on the first row, and it
+		// is only needed when there was somewhere to step down to.
+		b.WriteString(fmt.Sprintf("\x1b[%dA", n-1))
+	}
+	d.write(b.String())
 }
 
 // draw rewrites every row in place.

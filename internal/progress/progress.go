@@ -157,11 +157,6 @@ const (
 	warnMark = "!"
 )
 
-// eraseToEnd clears from the cursor to the bottom of the screen. Detect draws a
-// block that ends with the cursor on its first row, so this removes exactly the
-// block.
-const eraseToEnd = "\x1b[J"
-
 // newTicker returns the animation clock, at the same rate as the Spinner.
 func newTicker() *time.Ticker {
 	return time.NewTicker(spinner.Dot.FPS)
