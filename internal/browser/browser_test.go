@@ -3,6 +3,7 @@ package browser
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -166,6 +167,49 @@ func TestBrowserCandidatesKeepsWindowsPathsWhole(t *testing.T) {
 	got := browserCandidates()
 	if len(got) != 1 || got[0][0] != `C:\Browser\browser.exe` {
 		t.Errorf("browserCandidates = %v, want the path intact", got)
+	}
+}
+
+// A colon is legal in a Unix path, so a quoted one must not be mistaken for the
+// list separator: $BROWSER='"/opt/My:Browser/firefox"' names a single command,
+// and splitting it would leave two fragments nothing could rejoin.
+func TestCandidatesKeepsAQuotedColonWhole(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the colon-list convention is a Unix one")
+	}
+	t.Setenv("BROWSER", `"/opt/My:Browser/firefox" --new-tab:b-browser`)
+	got := candidates()
+	if len(got) != 2 {
+		t.Fatalf("candidates = %v, want two entries", got)
+	}
+	if got[0][0] != "/opt/My:Browser/firefox" || len(got[0]) != 2 || got[0][1] != "--new-tab" {
+		t.Errorf("candidates[0] = %v, want the quoted path and its argument intact", got[0])
+	}
+	if got[1][0] != "b-browser" {
+		t.Errorf("candidates[1] = %v, want the entry after the separator", got[1])
+	}
+}
+
+func TestSplitFallbacks(t *testing.T) {
+	cases := map[string][]string{
+		"a:b": {"a", "b"},
+		"a":   {"a"},
+		// Empty entries are dropped: "a::b" has a blank candidate, not a command
+		// named nothing.
+		"a::b":    {"a", "b"},
+		"":        nil,
+		"'a:b'":   {"'a:b'"},
+		`"a:b"`:   {`"a:b"`},
+		`"a:b:c"`: {`"a:b:c"`},
+		// An unterminated quote runs to the end rather than cutting at the next
+		// colon: the value is malformed either way, and half a path is worse
+		// than a whole one that will not be found.
+		`"a:b`: {`"a:b`},
+	}
+	for in, want := range cases {
+		if got := splitFallbacks(in); !reflect.DeepEqual(got, want) {
+			t.Errorf("splitFallbacks(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
