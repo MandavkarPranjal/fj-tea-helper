@@ -1,0 +1,156 @@
+package browser
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
+
+// fakeOpener writes an executable that records its arguments, which is the only
+// way to see what fth would have handed the desktop.
+func fakeOpener(t *testing.T, record string, exit int) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake opener is a shell script")
+	}
+	dir := t.TempDir()
+	name := filepath.Join(dir, "opener")
+	body := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + record + "\nexit " + strconv.Itoa(exit) + "\n"
+	if err := os.WriteFile(name, []byte(body), 0o755); err != nil {
+		t.Fatalf("write opener: %v", err)
+	}
+	return name
+}
+
+// waitForArgs waits for the opener to record what it was handed. open does not
+// block on the child — handing over the URL is the whole job — so the record
+// lands a moment after open has already returned.
+func waitForArgs(t *testing.T, record string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if raw, err := os.ReadFile(record); err == nil && len(raw) > 0 {
+			return strings.TrimSpace(string(raw))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the opener never recorded its arguments")
+	return ""
+}
+
+func TestOpenPassesTheURLToTheOpener(t *testing.T) {
+	dir := t.TempDir()
+	record := filepath.Join(dir, "args")
+	opener := fakeOpener(t, record, 0)
+
+	if err := open("https://codeberg.org/Owner/proj", [][]string{{opener}}); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if got := waitForArgs(t, record); got != "https://codeberg.org/Owner/proj" {
+		t.Errorf("opener received %q, want the URL", got)
+	}
+}
+
+// Extra arguments before the URL are kept: an opener is often named with the
+// verb it performs, such as "gio open".
+func TestOpenKeepsOpenerArguments(t *testing.T) {
+	dir := t.TempDir()
+	record := filepath.Join(dir, "args")
+	opener := fakeOpener(t, record, 0)
+
+	if err := open("https://example.com/a", [][]string{{opener, "open"}}); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if got, want := waitForArgs(t, record), "open\nhttps://example.com/a"; got != want {
+		t.Errorf("opener received %q, want %q", got, want)
+	}
+}
+
+// A desktop where one opener is missing but another works must still open: the
+// candidate list exists for exactly this.
+func TestOpenFallsBackToTheNextCandidate(t *testing.T) {
+	dir := t.TempDir()
+	record := filepath.Join(dir, "args")
+	opener := fakeOpener(t, record, 0)
+
+	cmds := [][]string{{filepath.Join(dir, "not-installed")}, {opener}}
+	if err := open("https://example.com", cmds); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if got := waitForArgs(t, record); got != "https://example.com" {
+		t.Errorf("fallback opener received %q, want the URL", got)
+	}
+}
+
+// With nothing installed the user is told so, including the URL, which they can
+// still open by hand. Losing that is what makes this failure annoying.
+func TestOpenWithNoOpenerNamesTheURL(t *testing.T) {
+	err := open("https://example.com", [][]string{{filepath.Join(t.TempDir(), "nope")}})
+	if err == nil {
+		t.Fatal("open succeeded with no opener installed")
+	}
+	if !strings.Contains(err.Error(), "https://example.com") {
+		t.Errorf("error = %v; want it to name the URL", err)
+	}
+}
+
+// Opening nothing is not a request to open the user's home page.
+func TestOpenRefusesAnEmptyURL(t *testing.T) {
+	if err := open("  ", [][]string{{"true"}}); err == nil {
+		t.Fatal("open accepted an empty URL")
+	}
+}
+
+// $BROWSER is the user's own statement about which browser they want, so it
+// wins over whatever this package would otherwise have picked.
+func TestCandidatesPrefersTheBrowserVariable(t *testing.T) {
+	t.Setenv("BROWSER", "/opt/firefox/firefox --new-tab")
+	got := candidates()
+	if len(got) == 0 || got[0][0] != "/opt/firefox/firefox" {
+		t.Fatalf("candidates = %v, want $BROWSER first", got)
+	}
+	if len(got[0]) != 2 || got[0][1] != "--new-tab" {
+		t.Errorf("candidates[0] = %v, want the arguments kept", got[0])
+	}
+}
+
+// The value is a colon-separated list of fallbacks, so the first entry that
+// starts is the one that wins.
+func TestCandidatesSplitsTheBrowserFallbackList(t *testing.T) {
+	t.Setenv("BROWSER", "a-browser:b-browser")
+	got := candidates()
+	if len(got) != 2 || got[0][0] != "a-browser" || got[1][0] != "b-browser" {
+		t.Errorf("candidates = %v, want the two entries in order", got)
+	}
+}
+
+func TestCandidatesIgnoresAnEmptyBrowserVariable(t *testing.T) {
+	t.Setenv("BROWSER", "   ")
+	got := candidates()
+	if len(got) == 0 {
+		t.Fatal("candidates is empty")
+	}
+	for _, argv := range got {
+		if argv[0] == "" {
+			t.Errorf("candidates = %v, want no empty command", got)
+		}
+	}
+}
+
+// The opener has to be one that exists for this platform, or fth would be
+// calling a program that was never shipped here.
+func TestCandidatesNamesAPlatformOpener(t *testing.T) {
+	t.Setenv("BROWSER", "")
+	got := candidates()
+	if len(got) == 0 {
+		t.Fatal("candidates is empty")
+	}
+	want := map[string]string{"darwin": "open", "linux": "xdg-open", "windows": "rundll32"}[runtime.GOOS]
+	if want != "" && got[0][0] != want {
+		t.Errorf("candidates[0] = %v, want %q first on %s", got[0], want, runtime.GOOS)
+	}
+}
