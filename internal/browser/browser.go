@@ -103,7 +103,7 @@ func browserCandidates() [][]string {
 	}
 	entries := []string{env}
 	if runtime.GOOS != "windows" {
-		entries = strings.Split(env, ":")
+		entries = splitFallbacks(env)
 	}
 	var out [][]string
 	for _, entry := range entries {
@@ -111,6 +111,47 @@ func browserCandidates() [][]string {
 			out = append(out, argv)
 		}
 	}
+	return out
+}
+
+// splitFallbacks splits $BROWSER's colon-separated list, without cutting inside
+// a quoted section.
+//
+// A colon is legal in a Unix path, so $BROWSER='"/opt/My:Browser/firefox"' is a
+// real command and not a two-entry list. Splitting on every colon would leave
+// the fragments '"/opt/My' and 'Browser/firefox"', which no later step can put
+// back together — so the quotes have to be honoured here, before fields sees
+// the entry. The quotes themselves are kept, since fields is what resolves
+// them.
+func splitFallbacks(env string) []string {
+	var (
+		out   []string
+		cur   strings.Builder
+		quote rune
+	)
+	flush := func() {
+		if cur.Len() > 0 {
+			out = append(out, cur.String())
+		}
+		cur.Reset()
+	}
+	for _, r := range env {
+		switch {
+		case quote != 0:
+			cur.WriteRune(r)
+			if r == quote {
+				quote = 0
+			}
+		case r == '"' || r == '\'':
+			quote = r
+			cur.WriteRune(r)
+		case r == ':':
+			flush()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	flush()
 	return out
 }
 
