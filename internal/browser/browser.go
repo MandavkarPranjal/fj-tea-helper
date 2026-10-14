@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"unicode"
 )
 
 // Open hands url to the default browser. It returns an error when no opener is
@@ -65,20 +66,9 @@ func start(name string, args []string) error {
 
 // candidates returns the openers to try, in order, for this platform.
 func candidates() [][]string {
-	// $BROWSER is the convention on Unix, and it comes first because it is the
-	// one the user set deliberately.
-	if env := os.Getenv("BROWSER"); strings.TrimSpace(env) != "" {
-		// The value is a colon-separated list of fallbacks; the first one that
-		// starts wins, which is what the list is for.
-		var out [][]string
-		for _, entry := range strings.Split(env, ":") {
-			if argv := fields(entry); len(argv) > 0 {
-				out = append(out, argv)
-			}
-		}
-		if len(out) > 0 {
-			return out
-		}
+	// $BROWSER comes first because it is the one the user set deliberately.
+	if out := browserCandidates(); len(out) > 0 {
+		return out
 	}
 	switch runtime.GOOS {
 	case "darwin":
@@ -100,15 +90,70 @@ func candidates() [][]string {
 	}
 }
 
-// fields splits an opener entry into a command and its arguments, dropping
-// empty entries. $BROWSER is frequently written with quotes or padding, and
-// exec does not want either.
-func fields(entry string) []string {
-	var out []string
-	for _, f := range strings.Fields(entry) {
-		if f = strings.Trim(f, `"'`); f != "" {
-			out = append(out, f)
+// browserCandidates reads $BROWSER, or returns nil when it is unset or empty.
+//
+// The colon-separated list is a Unix convention, and the first entry that starts
+// wins, which is what the list is for. Windows has no such convention and its
+// paths carry colons of their own — "C:\Browser\browser.exe" would be cut in
+// half — so there the value is taken whole and split on whitespace alone.
+func browserCandidates() [][]string {
+	env := strings.TrimSpace(os.Getenv("BROWSER"))
+	if env == "" {
+		return nil
+	}
+	entries := []string{env}
+	if runtime.GOOS != "windows" {
+		entries = strings.Split(env, ":")
+	}
+	var out [][]string
+	for _, entry := range entries {
+		if argv := fields(entry); len(argv) > 0 {
+			out = append(out, argv)
 		}
 	}
+	return out
+}
+
+// fields splits an opener entry into a command and its arguments.
+//
+// Quoted runs are kept whole and unquoted, so a browser installed under a path
+// with a space in it — "/opt/My Browser/firefox" — arrives as one argument
+// rather than three, which is what splitting first and trimming quotes after
+// would do. Backslash is left alone: it is a path separator on Windows, and
+// exec passes arguments literally anyway, so there is nothing to unescape.
+func fields(entry string) []string {
+	var (
+		out   []string
+		cur   strings.Builder
+		quote rune
+		open  bool // a word has started, even if it is still empty
+	)
+	flush := func() {
+		if open {
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+			}
+			cur.Reset()
+			open = false
+		}
+	}
+	for _, r := range entry {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '"' || r == '\'':
+			quote, open = r, true
+		case unicode.IsSpace(r):
+			flush()
+		default:
+			cur.WriteRune(r)
+			open = true
+		}
+	}
+	flush()
 	return out
 }
