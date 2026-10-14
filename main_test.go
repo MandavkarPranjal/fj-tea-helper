@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/himmel/fj-tea-helper/internal/config"
 	"github.com/himmel/fj-tea-helper/internal/forge"
 	"github.com/himmel/fj-tea-helper/internal/prompt"
 )
@@ -194,6 +195,62 @@ func TestRepoNameForDirRejectsTrimmedBasenames(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Toggling the stored preference has to be reversible and has to leave the file
+// readable, since the alternative is a config command that can brick itself.
+func TestRunConfigTogglesTheStoredSetting(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	if err := runConfig([]string{"open"}, false); err != nil {
+		t.Fatalf("config open: %v", err)
+	}
+	if got := readStoredOpen(t); !got {
+		t.Error("`fth config open` did not store open = true")
+	}
+	if err := runConfig([]string{"no-open"}, false); err != nil {
+		t.Fatalf("config no-open: %v", err)
+	}
+	if got := readStoredOpen(t); got {
+		t.Error("`fth config no-open` did not store open = false")
+	}
+}
+
+// A dry run of a setting change changes nothing, which is the whole point of
+// -dry-run.
+func TestRunConfigDryRunWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	if err := runConfig([]string{"open"}, true); err != nil {
+		t.Fatalf("config open -dry-run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "fth", "config.json")); err == nil {
+		t.Error("a dry run wrote the config file")
+	}
+}
+
+// A typo in a subcommand must not fall through and be taken for a repository
+// name, which would create a repository called "config" on the server.
+func TestRunConfigRejectsAnUnknownSubcommand(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	err := runConfig([]string{"oepn"}, false)
+	if err == nil {
+		t.Fatal("an unknown config subcommand was accepted")
+	}
+	if !strings.Contains(err.Error(), "no-open") {
+		t.Errorf("error = %v; want it to list the subcommands", err)
+	}
+}
+
+func readStoredOpen(t *testing.T) bool {
+	t.Helper()
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	return cfg.Open
 }
 
 // fakeTarget builds a Target with a real backend, since a zero-valued

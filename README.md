@@ -116,6 +116,8 @@ Flags may appear before or after the name, so `fth myproject -private` and
 | `-url` | `ssh` | Clone URL to wire up: `ssh` or `https` |
 | `-trust-model` | – | Gitea trust model (`tea` only; ignored elsewhere) |
 | `-template` | `false` | Mark as a template repository (`tea` only; ignored elsewhere) |
+| `-open` | `false` | Open the new repository in a browser once the run finishes |
+| `-no-open` | – | Don't open a browser, whatever the config file says |
 | `-no-push` | `false` | Create the remote but don't push |
 | `-no-scaffold` | `false` | Create only the remote repository |
 | `-force` | `false` | Scaffold even if the local directory isn't empty |
@@ -165,7 +167,73 @@ cd ~/code/myservice && fth
 
 # See what would happen
 fth myservice -dry-run
+
+# Open this one repository in your browser, just this once
+fth -open myservice
 ```
+
+## Configuration
+
+Everything fth does outside your terminal is off unless you turn it on.
+Settings live in a single JSON file:
+
+```
+$XDG_CONFIG_HOME/fth/config.json     # normally ~/.config/fth/config.json
+```
+
+```json
+{
+  "version": 1,
+  "open": false
+}
+```
+
+There is no command to write it by hand — `fth config` does that for you:
+
+| Command | Description |
+| --- | --- |
+| `fth config show` | Print the file's location and every setting |
+| `fth config path` | Print the file's location only |
+| `fth config open` | Open each new repository in a browser when a run finishes |
+| `fth config no-open` | Stop doing that |
+
+`-open` and `-no-open` override the stored value for a single run, which is the
+easy way to try it once without changing your stored preference. Passing both is
+an error rather than a silent last-one-wins.
+
+### Opening the repository in a browser
+
+With `open` enabled, the new repository's page is handed to your browser after
+the run finishes — **after** the scaffold and the push, so the page you land on
+already has the code on it:
+
+```console
+$ fth myservice
+...
+✓ created you/myservice on codeberg.org (https://codeberg.org/you/myservice)
+✓ scaffolded /home/you/myservice (branch main)
+✓ pushed main to origin (tracking origin)
+✓ opened https://codeberg.org/you/myservice
+```
+
+The browser is picked the usual way for each platform: `$BROWSER` when you have
+set it, then `xdg-open`, `gio open`, `x-www-browser`, `www-browser` and
+`sensible-browser` on Linux, `open` on macOS, `rundll32` on Windows. The first
+one that starts wins. fth does not wait for the browser to exit, and a failure
+is a warning rather than a failed run — the repository is already created and its
+URL has been printed, so nothing is lost.
+
+The browser opens on every path that ends with a repository created, including
+`-no-scaffold` and `-no-push`. It does **not** open if the scaffold or the push
+failed: the repository exists but is empty, and an empty page is worse than no
+page. It never opens under `-dry-run`, and the plan says `browser yes` when one
+is coming so you can see it before it happens.
+
+A config file that fth cannot read is reported and then ignored for that run
+rather than blocking it — a broken preference should not stop you publishing a
+repository. Because the file is hand-editable, unknown keys are refused rather
+than skipped, so `"oepn": true` tells you about the typo instead of silently
+never opening anything.
 
 ## Publishing an existing git repository
 

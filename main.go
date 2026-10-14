@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/himmel/fj-tea-helper/internal/browser"
+	"github.com/himmel/fj-tea-helper/internal/config"
 	"github.com/himmel/fj-tea-helper/internal/forge"
 	"github.com/himmel/fj-tea-helper/internal/progress"
 	"github.com/himmel/fj-tea-helper/internal/prompt"
@@ -55,6 +57,11 @@ type options struct {
 	showVersion bool
 	verbose     bool
 	noCache     bool
+	// open and noOpen override the config file's "open" setting for one run.
+	// Neither is defaulted, because a false default is what "not set" means
+	// here; explicitness is decided by fs.Visit.
+	open   bool
+	noOpen bool
 }
 
 func main() {
@@ -156,6 +163,8 @@ func run(argv []string) error {
 	fs.BoolVar(&o.showVersion, "version", false, "print the helper version and exit")
 	fs.BoolVar(&o.verbose, "verbose", false, "print the underlying CLI commands")
 	fs.BoolVar(&o.noCache, "no-cache", false, "always probe every CLI, ignoring the recent-results cache")
+	fs.BoolVar(&o.open, "open", false, "open the new repository in a browser when the run finishes")
+	fs.BoolVar(&o.noOpen, "no-open", false, "do not open a browser, whatever the config file says")
 
 	fs.Usage = func() { usage(fs) }
 
@@ -171,13 +180,15 @@ func run(argv []string) error {
 	// tell an explicit -remote from its default. That distinction decides
 	// whether a taken remote name is a conflict or merely something to ask
 	// about.
-	explicitRemote, explicitURL := false, false
+	explicitRemote, explicitURL, explicitOpen := false, false, false
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "remote":
 			explicitRemote = true
 		case "url":
 			explicitURL = true
+		case "open", "no-open":
+			explicitOpen = true
 		}
 	})
 
@@ -186,7 +197,45 @@ func run(argv []string) error {
 		return nil
 	}
 
+	// -open and -no-open are two spellings of one decision, so passing both is
+	// a contradiction rather than a last-one-wins.
+	if o.open && o.noOpen {
+		return fmt.Errorf("-open and -no-open cannot both be given")
+	}
+
 	rest := fs.Args()
+
+	// `fth config <setting>` is about fth itself rather than about a
+	// repository, so it is answered before the positional is read as a name.
+	// One bare "config" is left alone: it is a perfectly good repository name,
+	// and a second word is what makes the subcommand unambiguous.
+	if len(rest) >= 2 && rest[0] == "config" {
+		return runConfig(rest[1:], o.dryRun)
+	}
+
+	// The config file is read before anything slow happens, so a typo in it is
+	// reported long before the backend probing is over. A file that cannot be
+	// understood is a warning rather than a failure: the run is about a
+	// repository, and refusing to create one over an unreadable preference would
+	// be the tail wagging the dog. The default is the safe side of the switch
+	// anyway, and the created repository's URL is printed either way.
+	shouldOpen := false
+	if !o.list {
+		cfg, cfgErr := config.Load()
+		if cfgErr != nil && !errors.Is(cfgErr, config.ErrNoHome) {
+			fmt.Fprintln(os.Stderr, ui.Warnf("%v; using the defaults for this run", cfgErr))
+			cfg = config.Default()
+		}
+		// A flag is a statement about this run and outranks a stored
+		// preference; with neither, the config file decides.
+		shouldOpen = cfg.Open
+		if explicitOpen {
+			shouldOpen = o.open
+		}
+	}
+	if p, err := config.Path(); err == nil && !o.list {
+		logf(o.verbose, "config %s\n", p)
+	}
 
 	// A bare `fth`, an explicit `fth .`, and a name that is exactly the
 	// current directory's own name all mean the same thing: publish where I am
@@ -407,6 +456,7 @@ func run(argv []string) error {
 		RemoteURL:   previewURL,
 		Attach:      attach,
 		Upstream:    setUpstream,
+		Open:        shouldOpen,
 	}
 	printPlan(plan)
 
@@ -455,7 +505,17 @@ func run(argv []string) error {
 	}
 	fmt.Println(ui.Done(fmt.Sprintf("created %s on %s (%s)", repo.FullName, login.Name, ui.Dim(repo.WebURL))))
 
+	// The page is opened by every path that leaves with a repository created,
+	// which is why it is a closure over the resolved intent rather than a flag
+	// on the options.
+	showRepo := func() {
+		if shouldOpen {
+			openInBrowser(repo.WebURL)
+		}
+	}
+
 	if o.noScaffold {
+		showRepo()
 		return nil
 	}
 
@@ -514,6 +574,7 @@ func run(argv []string) error {
 	// 3. Push, unless suppressed.
 	if o.noPush {
 		fmt.Println("\n" + ui.Dim("skipping push (-no-push)"))
+		showRepo()
 		return nil
 	}
 	logf(o.verbose, "pushing to %s (set-upstream=%v)\n", res.RemoteName, setUpstream)
@@ -547,7 +608,81 @@ func run(argv []string) error {
 			fmt.Println(ui.Done("pushed " + res.Branch + " to " + res.RemoteName + " " + ui.Dim("(upstream "+up+")")))
 		}
 	}
+	// Only a run that reached the end: if the scaffolding or the push failed
+	// above, the repository exists but is not worth looking at yet, and opening
+	// an empty page is a worse answer than opening nothing.
+	showRepo()
 	return nil
+}
+
+// openInBrowser hands the new repository's page to the desktop.
+//
+// A failure here is a nuisance rather than a failed run: everything the user
+// came for is already done and the URL has been printed, so it is reported on
+// stderr and swallowed rather than turned into an error over an exit status.
+func openInBrowser(url string) {
+	if url == "" {
+		return
+	}
+	if err := browser.Open(url); err != nil {
+		fmt.Fprintln(os.Stderr, ui.Warnf("%v", err))
+		return
+	}
+	fmt.Println(ui.Done("opened " + url))
+}
+
+// configUsage lists the config subcommands, in one place so the error message
+// and -help cannot drift apart.
+var configUsage = []string{"show", "path", "open", "no-open"}
+
+// runConfig handles `fth config <subcommand>`.
+//
+// Settings are read fresh rather than from the copy the create path already
+// holds: here a broken file is the whole question the user came to ask, so it
+// is an error instead of the warning it is over there.
+func runConfig(args []string, dryRun bool) error {
+	sub := args[0]
+	rest := args[1:]
+	if len(rest) > 0 {
+		return fmt.Errorf("config %s takes no arguments (got %q)", sub, strings.Join(rest, " "))
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	path, err := config.Path()
+	if err != nil {
+		return err
+	}
+
+	switch sub {
+	case "show":
+		fmt.Println(path)
+		fmt.Printf("open = %t\n", cfg.Open)
+		return nil
+	case "path":
+		fmt.Println(path)
+		return nil
+	case "open", "no-open":
+		want := sub == "open"
+		if cfg.Open == want {
+			fmt.Println(ui.Dim(fmt.Sprintf("open = %t already", want)))
+			return nil
+		}
+		if dryRun {
+			fmt.Println(ui.Dim(fmt.Sprintf("(dry run: %s would be set to %t)", path, want)))
+			return nil
+		}
+		cfg.Open = want
+		if err := config.Save(cfg); err != nil {
+			return err
+		}
+		fmt.Println(ui.Done(fmt.Sprintf("open = %t (%s)", want, path)))
+		return nil
+	default:
+		return fmt.Errorf("unknown config command %q (want %s)", sub, strings.Join(configUsage, ", "))
+	}
 }
 
 // namesLocalDir reports whether the positional arguments ask for the directory
@@ -823,6 +958,10 @@ type createPlan struct {
 	Attach bool
 	// Upstream reports whether the pushed branch will track the remote.
 	Upstream bool
+	// Open reports that the new repository's page will be handed to a browser
+	// once the run is done. It is shown because it is the one thing the run
+	// does outside the terminal, and -dry-run is how a user sees it coming.
+	Open bool
 }
 
 func printPlan(p createPlan) {
@@ -859,6 +998,12 @@ func printPlan(p createPlan) {
 			}
 			fmt.Println(ui.Field("upstream", up))
 		}
+	}
+	// Only ever shown when it is on: a plan full of things that are not going to
+	// happen is noise, and a line reading "browser no" invites the question of
+	// what the alternative was.
+	if p.Open {
+		fmt.Println(ui.Field("browser", ui.Value("yes")+ui.Dim(" (open when done)")))
 	}
 	fmt.Println()
 }
@@ -906,6 +1051,7 @@ Usage:
   fth [flags]
   fth [flags] .
   fth -list
+  fth config <show|path|open|no-open>
 
 With no name, with ".", or with the name of the directory you are standing in,
 the repository is published where you stand: in ~/project/demo it creates
@@ -916,6 +1062,10 @@ It detects every 'fj' (Forgejo), 'tea' (Gitea), 'cafe' (GitCafe), 'gh' (GitHub)
 and 'try' (Trylle) login you have, asks which instance to create on, creates the
 remote repository, scaffolds a local git repo with README/.gitignore/LICENSE,
 adds the remote and pushes the initial commit.
+
+Settings live in ~/.config/fth/config.json (or $XDG_CONFIG_HOME/fth/config.json)
+and are all off by default; 'fth config open' turns one on. -open and -no-open
+override the stored value for a single run.
 
 Flags:
 `, version)
@@ -933,6 +1083,8 @@ Examples:
   fth -tool gh -host ghe.example.com -visibility private myproject
   fth -tool try -license MIT -lang go myproject
   fth -no-push -no-scaffold myproject
+  fth config open          # open each new repository in a browser
+  fth -no-open myproject   # this run only
 `)
 	_ = time.Now
 }
