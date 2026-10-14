@@ -88,6 +88,28 @@ func TestLoadRejectsMisspelledSetting(t *testing.T) {
 	}
 }
 
+// Decode stops at the end of the first value, so a file that is valid JSON
+// followed by rubbish would otherwise load cleanly — and a broken file is
+// precisely what this function promises to complain about.
+func TestLoadRejectsContentAfterTheObject(t *testing.T) {
+	dir := useConfigDir(t)
+	for _, body := range []string{
+		`{"open": true}{"open": false}`,
+		`{"open": true} and then some prose`,
+		`{"open": true}}`,
+	} {
+		write(t, dir, body)
+		if got, err := Load(); err == nil {
+			t.Errorf("Load(%q) = %+v, want an error", body, got)
+		}
+	}
+	// Trailing whitespace is still fine: a file with a final newline must load.
+	write(t, dir, "{\"open\": true}\n\n")
+	if _, err := Load(); err != nil {
+		t.Errorf("Load with a trailing newline: %v", err)
+	}
+}
+
 func TestLoadRejectsBrokenJSON(t *testing.T) {
 	dir := useConfigDir(t)
 	write(t, dir, `{"open": true`)
@@ -122,9 +144,11 @@ func TestLoadRejectsNewerSchema(t *testing.T) {
 	}
 }
 
-// Saving must not silently discard settings written since the copy the caller
-// was handed, which is what happens when two invocations race.
-func TestSaveKeepsOnlyWhatItWasGiven(t *testing.T) {
+// Save writes back exactly the configuration it was handed, over whatever was
+// on disk. That is what makes `fth config no-open` reliable when the stored
+// value is true: the whole file is rewritten rather than patched, so no stale
+// copy of a setting can survive the write.
+func TestSaveWritesTheConfigItWasGiven(t *testing.T) {
 	dir := useConfigDir(t)
 	write(t, dir, `{"version": 1, "open": true}`)
 	cfg, err := Load()

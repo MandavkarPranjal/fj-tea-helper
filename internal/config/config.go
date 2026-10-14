@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -92,6 +93,13 @@ func Load() (Config, error) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
 		return Default(), fmt.Errorf("read %s: %w", path, err)
+	}
+	// Decode stops at the end of the first value, so a stray second object, a
+	// duplicated closing brace or any other trailing rubbish would be ignored —
+	// and a file with rubbish in it is exactly what this function exists to
+	// catch. Whatever follows must be nothing.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return Default(), fmt.Errorf("read %s: unexpected content after the JSON object", path)
 	}
 	// A newer fth may know settings this one would drop on the floor, which is
 	// the same silent surprise as a typo. An older one is fine: settings it does

@@ -19,11 +19,19 @@ func fakeOpener(t *testing.T, record string, exit int) string {
 	}
 	dir := t.TempDir()
 	name := filepath.Join(dir, "opener")
-	body := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + record + "\nexit " + strconv.Itoa(exit) + "\n"
+	body := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + shQuote(record) + "\nexit " + strconv.Itoa(exit) + "\n"
 	if err := os.WriteFile(name, []byte(body), 0o755); err != nil {
 		t.Fatalf("write opener: %v", err)
 	}
 	return name
+}
+
+// shQuote renders s as a single POSIX shell word. The record path is a
+// temporary directory chosen by the test framework, but a name with a space in
+// it must not silently redirect somewhere else — and a name with a shell
+// metacharacter in it must not run anything.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // waitForArgs waits for the opener to record what it was handed. open does not
@@ -125,6 +133,47 @@ func TestCandidatesSplitsTheBrowserFallbackList(t *testing.T) {
 	got := candidates()
 	if len(got) != 2 || got[0][0] != "a-browser" || got[1][0] != "b-browser" {
 		t.Errorf("candidates = %v, want the two entries in order", got)
+	}
+}
+
+// A path with a space in it is quoted in the shell that exports $BROWSER, so
+// the quotes have to be resolved before the entry is split — otherwise the
+// browser is launched under a name that does not exist.
+func TestFieldsKeepsAQuotedPathWhole(t *testing.T) {
+	for _, in := range []string{
+		`"/opt/My Browser/firefox" --new-tab`,
+		`'/opt/My Browser/firefox'`,
+		`"/opt/My Browser/firefox"`,
+	} {
+		got := fields(in)
+		if len(got) == 0 || got[0] != "/opt/My Browser/firefox" {
+			t.Errorf("fields(%q) = %v, want the quoted path intact", in, got)
+		}
+	}
+	if got := fields(`"/opt/My Browser/firefox" --new-tab`); len(got) != 2 || got[1] != "--new-tab" {
+		t.Errorf("fields = %v, want the trailing argument kept", got)
+	}
+}
+
+// A browser under C:\ is one command, not two: the colon is a drive letter,
+// not a list separator. Windows has no colon-separated $BROWSER convention, so
+// splitting there would only ever corrupt a valid path.
+func TestBrowserCandidatesKeepsWindowsPathsWhole(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("the colon-list convention is a Unix one")
+	}
+	t.Setenv("BROWSER", `C:\Browser\browser.exe`)
+	got := browserCandidates()
+	if len(got) != 1 || got[0][0] != `C:\Browser\browser.exe` {
+		t.Errorf("browserCandidates = %v, want the path intact", got)
+	}
+}
+
+func TestFieldsDropsEmptyEntries(t *testing.T) {
+	for _, in := range []string{"   ", `""`, "\t\n"} {
+		if got := fields(in); len(got) != 0 {
+			t.Errorf("fields(%q) = %v, want nothing", in, got)
+		}
 	}
 }
 

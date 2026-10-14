@@ -180,7 +180,11 @@ func run(argv []string) error {
 	// tell an explicit -remote from its default. That distinction decides
 	// whether a taken remote name is a conflict or merely something to ask
 	// about.
-	explicitRemote, explicitURL, explicitOpen := false, false, false
+	explicitRemote, explicitURL := false, false
+	// explicitOpen records which spelling was used, not merely that one was:
+	// "-no-open=false" withdraws the override, which is the opposite of what
+	// reading only the boolean would do.
+	explicitOpen := ""
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
 		case "remote":
@@ -188,7 +192,7 @@ func run(argv []string) error {
 		case "url":
 			explicitURL = true
 		case "open", "no-open":
-			explicitOpen = true
+			explicitOpen = f.Name
 		}
 	})
 
@@ -229,8 +233,16 @@ func run(argv []string) error {
 		// A flag is a statement about this run and outranks a stored
 		// preference; with neither, the config file decides.
 		shouldOpen = cfg.Open
-		if explicitOpen {
+		switch explicitOpen {
+		case "open":
 			shouldOpen = o.open
+		case "no-open":
+			// Only an asserted -no-open suppresses the stored setting. Spelled
+			// "-no-open=false" the user is withdrawing the override, which
+			// leaves the config file in charge.
+			if o.noOpen {
+				shouldOpen = false
+			}
 		}
 	}
 	if p, err := config.Path(); err == nil && !o.list {
@@ -646,43 +658,49 @@ func runConfig(args []string, dryRun bool) error {
 	if len(rest) > 0 {
 		return fmt.Errorf("config %s takes no arguments (got %q)", sub, strings.Join(rest, " "))
 	}
+	switch sub {
+	case "show", "path", "open", "no-open":
+	default:
+		return fmt.Errorf("unknown config command %q (want %s)", sub, strings.Join(configUsage, ", "))
+	}
+
+	// The path is resolved before the file is read, so `fth config path` still
+	// works on a file too broken to parse — which is exactly when somebody
+	// wants to know where the file is, in order to go and fix it.
+	path, err := config.Path()
+	if err != nil {
+		return err
+	}
+	if sub == "path" {
+		fmt.Println(path)
+		return nil
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	path, err := config.Path()
-	if err != nil {
-		return err
-	}
-
-	switch sub {
-	case "show":
+	if sub == "show" {
 		fmt.Println(path)
 		fmt.Printf("open = %t\n", cfg.Open)
 		return nil
-	case "path":
-		fmt.Println(path)
-		return nil
-	case "open", "no-open":
-		want := sub == "open"
-		if cfg.Open == want {
-			fmt.Println(ui.Dim(fmt.Sprintf("open = %t already", want)))
-			return nil
-		}
-		if dryRun {
-			fmt.Println(ui.Dim(fmt.Sprintf("(dry run: %s would be set to %t)", path, want)))
-			return nil
-		}
-		cfg.Open = want
-		if err := config.Save(cfg); err != nil {
-			return err
-		}
-		fmt.Println(ui.Done(fmt.Sprintf("open = %t (%s)", want, path)))
-		return nil
-	default:
-		return fmt.Errorf("unknown config command %q (want %s)", sub, strings.Join(configUsage, ", "))
 	}
+
+	want := sub == "open"
+	if cfg.Open == want {
+		fmt.Println(ui.Dim(fmt.Sprintf("open = %t already", want)))
+		return nil
+	}
+	if dryRun {
+		fmt.Println(ui.Dim(fmt.Sprintf("(dry run: %s would be set to %t)", path, want)))
+		return nil
+	}
+	cfg.Open = want
+	if err := config.Save(cfg); err != nil {
+		return err
+	}
+	fmt.Println(ui.Done(fmt.Sprintf("open = %t (%s)", want, path)))
+	return nil
 }
 
 // namesLocalDir reports whether the positional arguments ask for the directory
@@ -1063,9 +1081,10 @@ and 'try' (Trylle) login you have, asks which instance to create on, creates the
 remote repository, scaffolds a local git repo with README/.gitignore/LICENSE,
 adds the remote and pushes the initial commit.
 
-Settings live in ~/.config/fth/config.json (or $XDG_CONFIG_HOME/fth/config.json)
-and are all off by default; 'fth config open' turns one on. -open and -no-open
-override the stored value for a single run.
+Settings live in a JSON file under your user config directory — on Unix
+~/.config/fth/config.json (or $XDG_CONFIG_HOME/fth/config.json), on Windows
+%%AppData%%\fth\config.json — and are all off by default. 'fth config open' turns
+one on; -open and -no-open override the stored value for a single run.
 
 Flags:
 `, version)

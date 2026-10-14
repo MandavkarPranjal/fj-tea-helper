@@ -116,7 +116,7 @@ Flags may appear before or after the name, so `fth myproject -private` and
 | `-url` | `ssh` | Clone URL to wire up: `ssh` or `https` |
 | `-trust-model` | – | Gitea trust model (`tea` only; ignored elsewhere) |
 | `-template` | `false` | Mark as a template repository (`tea` only; ignored elsewhere) |
-| `-open` | `false` | Open the new repository in a browser once the run finishes |
+| `-open` | the config setting | Open the new repository in a browser once the run finishes |
 | `-no-open` | – | Don't open a browser, whatever the config file says |
 | `-no-push` | `false` | Create the remote but don't push |
 | `-no-scaffold` | `false` | Create only the remote repository |
@@ -175,11 +175,15 @@ fth -open myservice
 ## Configuration
 
 Everything fth does outside your terminal is off unless you turn it on.
-Settings live in a single JSON file:
+Settings live in a single JSON file under your user config directory:
 
-```
-$XDG_CONFIG_HOME/fth/config.json     # normally ~/.config/fth/config.json
-```
+| Platform | Location |
+| --- | --- |
+| Linux, BSD | `$XDG_CONFIG_HOME/fth/config.json`, or `~/.config/fth/config.json` when `XDG_CONFIG_HOME` is unset |
+| macOS | `~/Library/Application Support/fth/config.json` |
+| Windows | `%AppData%\fth\config.json` |
+
+`fth config path` prints the location for whichever platform you are on.
 
 ```json
 {
@@ -203,9 +207,9 @@ an error rather than a silent last-one-wins.
 
 ### Opening the repository in a browser
 
-With `open` enabled, the new repository's page is handed to your browser after
-the run finishes — **after** the scaffold and the push, so the page you land on
-already has the code on it:
+With `open` enabled, the new repository's page is handed to your browser once
+the run finishes. On an ordinary run that means **after** the scaffold and the
+push, so the page you land on already has the code on it:
 
 ```console
 $ fth myservice
@@ -223,11 +227,14 @@ one that starts wins. fth does not wait for the browser to exit, and a failure
 is a warning rather than a failed run — the repository is already created and its
 URL has been printed, so nothing is lost.
 
-The browser opens on every path that ends with a repository created, including
-`-no-scaffold` and `-no-push`. It does **not** open if the scaffold or the push
-failed: the repository exists but is empty, and an empty page is worse than no
-page. It never opens under `-dry-run`, and the plan says `browser yes` when one
-is coming so you can see it before it happens.
+The browser opens on every path that ends with a repository created. That
+includes `-no-scaffold`, which never writes anything locally, and `-no-push`,
+which leaves the remote empty — in both of those the page you land on is a new,
+empty repository rather than one with your code on it. It does **not** open if
+the scaffold or the push failed: the repository exists but is not worth looking
+at yet, and opening nothing is better than opening an empty page. It never opens
+under `-dry-run`, and the plan says `browser yes` when one is coming so you can
+see it before it happens.
 
 A config file that fth cannot read is reported and then ignored for that run
 rather than blocking it — a broken preference should not stop you publishing a
