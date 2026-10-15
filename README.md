@@ -45,7 +45,7 @@ fth myproject -tool tea -host gitea.com -lang go -license MIT -yes
 ```
 
 [Backend detection](#backend-detection) covers the probe and
-[Examples](#examples) lists the rest of the flags. The recording lives in
+[Examples](#flags) lists the rest of the flags. The recording lives in
 [`demo.tape`](demo.tape) and is made with
 [VHS](https://github.com/charmbracelet/vhs):
 
