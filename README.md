@@ -29,11 +29,24 @@ Plan
 
 ![fth detecting every backend it is logged in to, then creating a repository on Gitea](demo.gif)
 
-One command, `fth`, with nothing else on the line. It probes every `fj`,
-`tea`, `cafe`, `gh` and `try` login you have, asks which instance to create
-the repository on, asks which clone URL to wire up, then creates, scaffolds
-and pushes — both questions answered with the arrow keys in the recording. It
-lives in [`demo.tape`](demo.tape) and is made with
+The recording is the shortest form: one command, `fth`, with nothing else on
+the line. It probes every `fj`, `tea`, `cafe`, `gh` and `try` login you have,
+asks which instance to create the repository on, asks which clone URL to wire
+up, then plans, creates, scaffolds and pushes — both questions answered with
+the arrow keys.
+
+Neither question is compulsory. `fth -list` is the first thing to run: every
+backend login it can find, and the licenses it can write. Spelling the whole
+run out asks nothing at all, which is what you want in a script:
+
+```sh
+fth -list
+fth myproject -tool tea -host gitea.com -lang go -license MIT -yes
+```
+
+[Backend detection](#backend-detection) covers the probe and
+[Examples](#examples) lists the rest of the flags. The recording lives in
+[`demo.tape`](demo.tape) and is made with
 [VHS](https://github.com/charmbracelet/vhs):
 
 ```sh
