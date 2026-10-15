@@ -27,6 +27,19 @@ Plan
 ✓ pushed main to origin
 ```
 
+![fth detecting every backend it is logged in to, then creating a repository on Gitea](demo.gif)
+
+One command, `fth`, with nothing else on the line. It probes every `fj`,
+`tea`, `cafe`, `gh` and `try` login you have, asks which instance to create
+the repository on, asks which clone URL to wire up, then creates, scaffolds
+and pushes — both questions answered with the arrow keys in the recording. It
+lives in [`demo.tape`](demo.tape) and is made with
+[VHS](https://github.com/charmbracelet/vhs):
+
+```sh
+vhs demo.tape
+```
+
 ## Install
 
 This project uses [mise](https://mise.jdx.dev) for the toolchain and tasks:
@@ -659,6 +672,7 @@ Layout:
 
 - `main.go` — CLI parsing, flags, orchestration
 - `mise.toml` — pinned toolchain (Go, golangci-lint) and task definitions
+- `demo.tape` — the VHS tape the README GIF at the top is recorded from
 - `internal/forge` — backend abstraction over `tea`, `fj`, `cafe`, `gh` and `try`
   (`forge.go`, `tea.go`, `fj.go`, `cafe.go`, `gh.go`, `try.go`, `detect.go`,
   `exec.go`)
